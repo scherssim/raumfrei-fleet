@@ -1,0 +1,14 @@
+# Dieses Repo wird auf Windows gepflegt, aber auf Linux ausgecheckt
+# (ansible-pull auf Pi, VMs und Containern). Ohne diese Datei macht Git aus
+# jedem Skript und jeder systemd-Unit CRLF - und der Pi antwortet mit
+# "/bin/bash^M: bad interpreter".
+* text=auto eol=lf
+
+# Nur die PowerShell-Skripte bleiben CRLF, die laufen auf dem Host.
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.pdf binary
+*.zip binary
+*.docx binary

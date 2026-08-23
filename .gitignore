@@ -1,0 +1,20 @@
+# Secrets - gehoeren NIE ins Repo.
+# Das Repo ist oeffentlich, weil ansible-pull ohne Credentials klonen soll.
+# Alles Vertrauliche (Enrollment-Secret, Admin-Key, Token) lebt entweder im
+# Image oder im Backend, nie hier.
+secrets.env
+*.env
+!client/cloud-init/*.env.example
+
+# Build-Artefakte
+*.zip
+__pycache__/
+*.pyc
+
+# Rohdaten der Messreihen (die ausgewerteten CSV kommen ins Repo)
+lab/results/raw/
+
+# Betriebssystem
+Thumbs.db
+desktop.ini
+.DS_Store
