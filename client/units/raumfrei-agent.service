@@ -1,0 +1,18 @@
+[Unit]
+Description=RaumFrei - Soll-Zustand holen, herstellen und melden
+Documentation=https://github.com/simonsscherer/raumfrei-fleet
+After=network-online.target raumfrei-enroll.service
+Wants=network-online.target
+ConditionPathExists=/etc/raumfrei/device.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/raumfrei-agent
+# Ein Lauf darf das Geraet nicht blockieren; der naechste Timer-Tick kommt
+# ohnehin. 10 Minuten sind grosszuegig fuer einen ansible-pull.
+TimeoutStartSec=600
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

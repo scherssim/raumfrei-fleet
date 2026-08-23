@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# raumfrei-agent - ein Durchlauf des Regelkreises.
+#
+#   1. Soll-Zustand holen      GET  /config/{deviceId}
+#   2. Soll-Zustand herstellen ansible-pull gegen das Git-Repo
+#   3. Ist-Zustand melden      POST /checkin
+#
+# Wird vom Timer aufgerufen, getaktet auf die Lektionsenden. Es gibt keinen
+# Rueckkanal: das Backend kann diesen Lauf nicht ausloesen, es kann nur
+# antworten, wenn das Geraet fragt.
+#
+# Exit-Code ist absichtlich 0, solange der Check-in abgesetzt werden konnte -
+# ein fehlgeschlagener Ansible-Lauf ist ein zu meldender Zustand, kein Grund,
+# den Timer in den Fehlerzustand zu schicken.
+
+set -uo pipefail
+
+AGENT_VERSION="0.1.0"
+CONF_DIR="/etc/raumfrei"
+ENV_FILE="${CONF_DIR}/agent.env"
+DEVICE_FILE="${CONF_DIR}/device.json"
+DESIRED_FILE="${CONF_DIR}/desired.json"
+STATE_DIR="/var/lib/raumfrei"
+PULL_DIR="${STATE_DIR}/pull"
+PULL_LOG="${STATE_DIR}/last-pull.log"
+
+log() { echo "raumfrei-agent: $*"; }
+
+[ -r "$ENV_FILE" ] || { log "ABBRUCH: $ENV_FILE fehlt."; exit 1; }
+# shellcheck disable=SC1090
+set -a; . "$ENV_FILE"; set +a
+: "${BACKEND_URL:?BACKEND_URL fehlt in agent.env}"
+
+if [ ! -s "$DEVICE_FILE" ]; then
+    log "noch nicht angemeldet - raumfrei-enroll laeuft zuerst."
+    exit 0
+fi
+
+DEVICE_ID="$(python3 -c 'import json;print(json.load(open("/etc/raumfrei/device.json"))["deviceId"])')"
+TOKEN="$(python3 -c 'import json;print(json.load(open("/etc/raumfrei/device.json"))["token"])')"
+mkdir -p "$STATE_DIR"
+
+# --- 1 Soll-Zustand holen ----------------------------------------------------
+RESPONSE="$(curl -sS --max-time 20 -w '\n%{http_code}' \
+    "${BACKEND_URL}/config/${DEVICE_ID}" \
+    -H "Authorization: Bearer ${TOKEN}" 2>/dev/null)"
+CODE="$(printf '%s' "$RESPONSE" | tail -1)"
+BODY="$(printf '%s' "$RESPONSE" | sed '$d')"
+
+case "$CODE" in
+    200)
+        printf '%s' "$BODY" > "${DESIRED_FILE}.neu"
+        mv "${DESIRED_FILE}.neu" "$DESIRED_FILE"
+        chmod 644 "$DESIRED_FILE"
+        log "Soll-Zustand aktualisiert (Version $(python3 -c 'import json;print(json.load(open("/etc/raumfrei/desired.json"))["configVersion"])'))."
+        ;;
+    401|403)
+        # Widerrufen oder ausgemustert: lokale Identitaet und Konfiguration weg.
+        # Mehr kann das Backend nicht durchsetzen - und mehr braucht es auch
+        # nicht, denn ohne Token bekommt das Geraet nie wieder eine Config.
+        log "Backend sagt ${CODE} - Geraet ist widerrufen. Lokale Identitaet wird entfernt."
+        rm -f "$DEVICE_FILE" "$DESIRED_FILE"
+        systemctl stop raumfrei-kiosk.service 2>/dev/null || true
+        exit 0
+        ;;
+    *)
+        # Kein Backend erreichbar: mit dem letzten bekannten Soll-Zustand
+        # weiterarbeiten. Das Display zeigt ohnehin seinen gecachten Plan.
+        if [ -s "$DESIRED_FILE" ]; then
+            log "Backend nicht erreichbar (HTTP ${CODE:-keine Antwort}) - fahre mit dem letzten Soll-Zustand fort."
+        else
+            log "Backend nicht erreichbar und kein zwischengespeicherter Soll-Zustand - Abbruch."
+            exit 0
+        fi
+        ;;
+esac
+
+PULL_REPO="$(python3 -c 'import json;print(json.load(open("/etc/raumfrei/desired.json")).get("pullRepo") or "")')"
+PULL_BRANCH="$(python3 -c 'import json;print(json.load(open("/etc/raumfrei/desired.json")).get("pullBranch") or "main")')"
+CONFIG_VERSION="$(python3 -c 'import json;print(json.load(open("/etc/raumfrei/desired.json")).get("configVersion") or "")')"
+
+# --- 2 Soll-Zustand herstellen ----------------------------------------------
+START=$(date +%s.%N)
+if [ -n "$PULL_REPO" ]; then
+    log "ansible-pull gegen ${PULL_REPO} (${PULL_BRANCH})"
+    ansible-pull \
+        --url "$PULL_REPO" \
+        --checkout "$PULL_BRANCH" \
+        --directory "$PULL_DIR" \
+        --inventory localhost, \
+        --connection local \
+        --extra-vars "@${DESIRED_FILE}" \
+        ansible/site.yml > "$PULL_LOG" 2>&1
+    PULL_RC=$?
+else
+    log "kein pullRepo im Soll-Zustand - Ansible-Lauf uebersprungen."
+    : > "$PULL_LOG"
+    PULL_RC=0
+fi
+DURATION=$(python3 -c "print(round($(date +%s.%N) - $START, 1))")
+
+# Recap-Zeile von ansible-pull auswerten:
+# localhost : ok=24 changed=2 unreachable=0 failed=0 skipped=1 ...
+RECAP="$(grep -E '^localhost\s+:' "$PULL_LOG" | tail -1)"
+value_of() { printf '%s' "$RECAP" | sed -n "s/.*$1=\([0-9]\+\).*/\1/p"; }
+OK="$(value_of ok)";           OK="${OK:-0}"
+CHANGED="$(value_of changed)"; CHANGED="${CHANGED:-0}"
+FAILED="$(value_of failed)";   FAILED="${FAILED:-0}"
+UNREACHABLE="$(value_of unreachable)"; UNREACHABLE="${UNREACHABLE:-0}"
+
+# Ein Ansible-Lauf, der gar nicht erst startet (Repo weg, Syntaxfehler), hat
+# keine Recap-Zeile. Das ist ein Fehlschlag und muss auch so gemeldet werden.
+if [ -z "$RECAP" ] && [ "$PULL_RC" -ne 0 ]; then
+    FAILED=1
+fi
+
+if [ "$CHANGED" -gt 0 ]; then
+    log "Drift gefunden und korrigiert: ${CHANGED} Aenderung(en)."
+fi
+
+CHANGED_TASKS="$(grep -E '^changed: \[localhost\]' "$PULL_LOG" | head -10 \
+    | sed 's/^changed: \[localhost\] => //' | python3 -c '
+import json, sys
+print(json.dumps([line.strip()[:120] for line in sys.stdin if line.strip()]))
+' 2>/dev/null || echo '[]')"
+
+# --- 3 Ist-Zustand melden ----------------------------------------------------
+KIOSK_ACTIVE=false
+systemctl is-active --quiet raumfrei-kiosk.service && KIOSK_ACTIVE=true
+CURRENT_URL="$(python3 -c 'import json;print(json.load(open("/etc/raumfrei/desired.json")).get("displayUrl") or "")' 2>/dev/null)"
+UPTIME="$(cut -d. -f1 /proc/uptime)"
+IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+
+export CHANGED_TASKS
+REPORT="$(python3 - "$DEVICE_ID" "$CONFIG_VERSION" "$OK" "$CHANGED" "$FAILED" "$UNREACHABLE" \
+    "$DURATION" "$KIOSK_ACTIVE" "$CURRENT_URL" "$UPTIME" "$IP" "$AGENT_VERSION" <<'PYTHON'
+import json, sys, os
+(device_id, version, ok, changed, failed, unreachable, duration,
+ kiosk, url, uptime, ip, agent_version) = sys.argv[1:13]
+try:
+    changed_tasks = json.loads(os.environ.get("CHANGED_TASKS", "[]"))
+except ValueError:
+    changed_tasks = []
+print(json.dumps({
+    "deviceId": device_id,
+    "configVersion": version,
+    "agentVersion": agent_version,
+    "ansible": {"ok": int(ok), "changed": int(changed), "failed": int(failed),
+                "unreachable": int(unreachable), "duration": float(duration)},
+    "changedTasks": changed_tasks,
+    "kioskActive": kiosk == "true",
+    "currentUrl": url,
+    "uptime": int(uptime),
+    "ip": ip,
+}))
+PYTHON
+)"
+
+RESPONSE="$(curl -sS --max-time 20 -w '\n%{http_code}' \
+    -X POST "${BACKEND_URL}/checkin" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -d "$REPORT" 2>/dev/null)"
+CODE="$(printf '%s' "$RESPONSE" | tail -1)"
+BODY="$(printf '%s' "$RESPONSE" | sed '$d')"
+
+if [ "$CODE" = "200" ]; then
+    log "Check-in: $(printf '%s' "$BODY" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("compliance"),"| Soll",d.get("desiredConfigVersion"))' 2>/dev/null || printf '%s' "$BODY")"
+else
+    log "Check-in fehlgeschlagen (HTTP ${CODE:-keine Antwort}) - der naechste Lauf meldet erneut."
+fi
+
+log "Lauf beendet: ok=${OK} changed=${CHANGED} failed=${FAILED} in ${DURATION}s"
+exit 0

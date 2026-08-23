@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# raumfrei-enroll - Erstboot: aus dem gemeinsamen Secret eine geraeteindividuelle
+# Identitaet machen.
+#
+# Laeuft genau einmal (die systemd-Unit hat ConditionPathExists=!device.json).
+# Das Enrollment-Secret verlaesst das Geraet nie: es dient nur als Schluessel
+# fuer einen HMAC ueber mac|ts|nonce. Wer den Request mitliest, kann ihn nicht
+# wiederverwenden - die Nonce ist beim Backend danach verbraucht und das
+# Zeitfenster betraegt 300 Sekunden.
+#
+# Ergebnis: /etc/raumfrei/device.json  {deviceId, token}  mit Modus 0600.
+
+set -uo pipefail
+
+CONF_DIR="/etc/raumfrei"
+ENV_FILE="${CONF_DIR}/agent.env"
+DEVICE_FILE="${CONF_DIR}/device.json"
+MAX_TRIES=30
+
+log() { echo "raumfrei-enroll: $*"; }
+die() { log "ABBRUCH: $*"; exit 1; }
+
+[ -r "$ENV_FILE" ] || die "$ENV_FILE fehlt - gehoert ins Image (cloud-init)."
+# shellcheck disable=SC1090
+set -a; . "$ENV_FILE"; set +a
+
+: "${BACKEND_URL:?BACKEND_URL fehlt in agent.env}"
+: "${ENROLL_SECRET:?ENROLL_SECRET fehlt in agent.env}"
+
+if [ -s "$DEVICE_FILE" ]; then
+    log "bereits angemeldet, nichts zu tun."
+    exit 0
+fi
+
+# --- MAC des Interface bestimmen, ueber das wir tatsaechlich rausgehen --------
+primary_interface() {
+    ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}'
+}
+
+mac_address() {
+    local interface
+    interface="$(primary_interface)"
+    if [ -n "$interface" ] && [ -r "/sys/class/net/${interface}/address" ]; then
+        cat "/sys/class/net/${interface}/address"
+        return 0
+    fi
+    # Fallback: erstes echtes Interface, das nicht lo/virtuell ist.
+    for path in /sys/class/net/*/address; do
+        local name; name="$(basename "$(dirname "$path")")"
+        case "$name" in lo|docker*|veth*|br-*|virbr*) continue ;; esac
+        cat "$path"; return 0
+    done
+    return 1
+}
+
+canonical_mac() { tr 'A-Z' 'a-z' | tr -cd '0-9a-f'; }
+
+RAW_MAC="$(mac_address)" || die "keine MAC gefunden."
+MAC="$(printf '%s' "$RAW_MAC" | canonical_mac)"
+[ "${#MAC}" -eq 12 ] || die "MAC '$RAW_MAC' ist unbrauchbar."
+
+MODEL="unbekannt"
+if [ -r /proc/device-tree/model ]; then
+    MODEL="$(tr -d '\0' < /proc/device-tree/model)"
+elif [ -r /sys/class/dmi/id/product_name ]; then
+    MODEL="$(cat /sys/class/dmi/id/product_name)"
+fi
+
+log "MAC ${MAC} · Host $(hostname) · Modell ${MODEL}"
+
+# --- Anmelden, mit Backoff ---------------------------------------------------
+# Beim Erstboot ist das Netz oft noch nicht so weit, wie systemd denkt, und ein
+# ganzer Stock voller Displays startet nach einem Stromausfall gleichzeitig.
+# Deshalb Wiederholung mit wachsender Wartezeit und etwas Zufall.
+attempt=1
+while [ "$attempt" -le "$MAX_TRIES" ]; do
+    TS="$(date +%s)"
+    NONCE="$(openssl rand -hex 16)"
+    SIGNATURE="$(printf '%s|%s|%s' "$MAC" "$TS" "$NONCE" \
+        | openssl dgst -sha256 -hmac "$ENROLL_SECRET" -hex | sed 's/^.*= //')"
+
+    PAYLOAD="$(printf '{"mac":"%s","hostname":"%s","model":"%s","ts":%s,"nonce":"%s","hmac":"%s"}' \
+        "$MAC" "$(hostname)" "$MODEL" "$TS" "$NONCE" "$SIGNATURE")"
+
+    RESPONSE="$(curl -sS --max-time 20 -w '\n%{http_code}' \
+        -X POST "${BACKEND_URL}/enroll" \
+        -H 'Content-Type: application/json' \
+        -d "$PAYLOAD" 2>/dev/null)"
+    CODE="$(printf '%s' "$RESPONSE" | tail -1)"
+    BODY="$(printf '%s' "$RESPONSE" | sed '$d')"
+
+    case "$CODE" in
+        200)
+            umask 077
+            mkdir -p "$CONF_DIR"
+            printf '%s' "$BODY" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+json.dump({"deviceId": data["deviceId"], "token": data["token"]},
+          open("/etc/raumfrei/device.json", "w"))
+print("raumfrei-enroll: angemeldet als " + data["deviceId"]
+      + " (Raum " + str(data.get("roomId") or "noch nicht zugewiesen") + ")")
+' || die "Antwort des Backends war unlesbar: $BODY"
+            chmod 600 "$DEVICE_FILE"
+            log "Identitaet liegt in $DEVICE_FILE (0600)."
+            exit 0
+            ;;
+        403)
+            # Widerrufen oder ausgemustert - Wiederholen aendert daran nichts.
+            die "Backend verweigert die Anmeldung dauerhaft: $BODY"
+            ;;
+        401)
+            die "HMAC abgelehnt - stimmt das ENROLL_SECRET im Image? $BODY"
+            ;;
+        *)
+            WAIT=$(( attempt < 10 ? attempt * 3 : 30 ))
+            WAIT=$(( WAIT + RANDOM % 5 ))
+            log "Versuch ${attempt}/${MAX_TRIES} fehlgeschlagen (HTTP ${CODE:-keine Antwort}), warte ${WAIT}s."
+            sleep "$WAIT"
+            ;;
+    esac
+    attempt=$(( attempt + 1 ))
+done
+
+die "nach ${MAX_TRIES} Versuchen keine Anmeldung moeglich."

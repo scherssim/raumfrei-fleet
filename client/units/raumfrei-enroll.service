@@ -1,0 +1,20 @@
+[Unit]
+Description=RaumFrei - Erstboot-Enrollment (Secret zu Identitaet)
+Documentation=https://github.com/simonsscherer/raumfrei-fleet
+After=network-online.target time-sync.target
+Wants=network-online.target
+# Laeuft genau einmal: sobald die Identitaet liegt, ist die Bedingung falsch.
+ConditionPathExists=!/etc/raumfrei/device.json
+Before=raumfrei-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/local/sbin/raumfrei-enroll
+# Das Skript wiederholt selbst mit Backoff; ein Fehlschlag hier bedeutet, dass
+# das Backend dauerhaft ablehnt (falsches Secret, widerrufenes Geraet).
+Restart=no
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

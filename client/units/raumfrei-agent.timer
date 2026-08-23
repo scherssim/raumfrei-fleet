@@ -1,0 +1,36 @@
+[Unit]
+Description=RaumFrei - Abgleich, getaktet auf die Lektionsenden
+Documentation=https://github.com/simonsscherer/raumfrei-fleet
+
+[Timer]
+# Die Lektionsenden aus RaumFrei (Mo-Fr, Lektion 1-8):
+#   1 07:30-08:20   2 08:25-09:15   3 09:30-10:20   4 10:25-11:15
+#   5 11:20-12:10   6 13:00-13:50   7 13:55-14:45   8 14:50-15:40
+#
+# Der Takt folgt dem Nutzungsrhythmus, nicht einer runden Zahl: ein Display
+# muss genau dann aktuell sein, wenn die naechste Lektion beginnt. Das sind
+# 8 Laeufe an 5 Tagen - rund 173 Laeufe und damit ~346 Requests pro Geraet
+# und Monat. Ein 5-Minuten-Takt waere das 25-fache fuer keinen Nutzen.
+OnCalendar=Mon..Fri 08:20
+OnCalendar=Mon..Fri 09:15
+OnCalendar=Mon..Fri 10:20
+OnCalendar=Mon..Fri 11:15
+OnCalendar=Mon..Fri 12:10
+OnCalendar=Mon..Fri 13:50
+OnCalendar=Mon..Fri 14:45
+OnCalendar=Mon..Fri 15:40
+
+# Nach dem Booten einmal abgleichen - ein Display, das nach einem Stromausfall
+# hochkommt, soll nicht bis zur naechsten Lektion warten.
+OnBootSec=2min
+
+# Ein ganzes Stockwerk startet nach einem Stromausfall gleichzeitig und jeder
+# Timer wuerde zur selben Sekunde feuern. Die Streuung verteilt die Last -
+# der Preis dafuer ist bis zu 90 s zusaetzliche Latenz, gemessen in M2.
+RandomizedDelaySec=90
+
+# Verpasste Laeufe (Geraet war aus) beim naechsten Start nachholen.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

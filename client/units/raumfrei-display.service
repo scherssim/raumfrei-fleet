@@ -1,0 +1,20 @@
+[Unit]
+Description=RaumFrei - lokaler Auslieferer der Anzeigeseite
+Documentation=https://github.com/simonsscherer/raumfrei-fleet
+After=network.target
+ConditionPathExists=/var/lib/raumfrei/display/display.html
+
+[Service]
+# Warum ein lokaler Server statt file:// - die Anzeigeseite legt den zuletzt
+# geholten Raumplan in localStorage ab, damit sie bei nicht erreichbarem
+# Backend weiter den letzten Stand zeigt. Unter file:// ist der Origin "null":
+# localStorage und CORS verhalten sich dort je nach Browser unterschiedlich.
+# Ein Server auf 127.0.0.1 kostet ~10 MB RSS und macht das Verhalten eindeutig.
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 127.0.0.1 --directory /var/lib/raumfrei/display
+Restart=always
+RestartSec=3
+User=display
+Group=display
+
+[Install]
+WantedBy=multi-user.target

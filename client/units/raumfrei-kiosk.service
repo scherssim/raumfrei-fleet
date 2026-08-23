@@ -1,0 +1,30 @@
+[Unit]
+Description=RaumFrei - Kiosk-Anzeige (cage + Browser auf seat0)
+Documentation=https://github.com/simonsscherer/raumfrei-fleet
+After=raumfrei-display.service systemd-user-sessions.service
+Wants=raumfrei-display.service
+ConditionPathExists=/etc/raumfrei/kiosk.env
+
+[Service]
+# Erste Heilungsschicht: stirbt der Browser, ist er in Sekunden zurueck.
+# Konfigurationsdrift heilt das NICHT - dafuer braucht es den naechsten
+# ansible-pull. Genau diese Zweiteilung misst die Drift-Matrix.
+Restart=always
+RestartSec=3
+
+User=display
+Group=display
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty-fail
+StandardOutput=journal
+UtmpIdentifier=tty1
+
+EnvironmentFile=/etc/raumfrei/kiosk.env
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+
+ExecStart=/usr/local/bin/raumfrei-kiosk-start
+
+[Install]
+WantedBy=graphical.target
