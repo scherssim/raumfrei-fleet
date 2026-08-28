@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RaumFrei – Schulzimmer-Verwaltung</title>
+  <style>
+    :root {
+      --bg:        #0b0c10;
+      --panel:     #10131a;
+      --panel2:    #151a24;
+      --text:      #e9edf1;
+      --muted:     #9aa6b2;
+      --line:      rgba(255,255,255,.12);
+      --radius:    14px;
+      --shadow:    0 10px 30px rgba(0,0,0,.38);
+      --btnBg:     rgba(255,255,255,.06);
+      --btnHover:  rgba(255,255,255,.10);
+      --btnPrimBg: rgba(120,180,255,.18);
+      --btnPrimBo: rgba(120,180,255,.35);
+      --free:      rgba(40,200,120,.14);
+      --freeBo:    rgba(40,200,120,.40);
+      --booked:    rgba(255,90,90,.16);
+      --bookedBo:  rgba(255,90,90,.42);
+      --selBook:   rgba(120,180,255,.30);
+      --selBookBo: rgba(120,180,255,.75);
+      --selRel:    rgba(255,170,60,.28);
+      --selRelBo:  rgba(255,170,60,.75);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      margin: 0; padding: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+
+    /* ── HEADER ── */
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 16px 24px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    }
+    header h1 { margin: 0; font-size: 18px; font-weight: 900; letter-spacing: .2px; }
+    header .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+    .apiStatus { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .apiDot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+
+    /* ── MAIN ── */
+    main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── CONTROLS ── */
+    .controls {
+      display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap;
+    }
+    .controls label { font-size: 12px; font-weight: 900; display: flex; flex-direction: column; gap: 6px; }
+    .controls select {
+      min-width: 240px; color: var(--text);
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--line); border-radius: 10px;
+      padding: 10px; font-size: 13px; outline: none;
+    }
+    .controls select:focus { border-color: rgba(120,180,255,.5); }
+    .controls select option { background: #1a1f2e; }
+
+    /* ── LEGEND ── */
+    .legend { display: flex; align-items: center; gap: 16px; font-size: 12px; flex-wrap: wrap; margin-left: auto; }
+    .legendItem { display: flex; align-items: center; gap: 6px; }
+    .dot { width: 12px; height: 12px; border-radius: 4px; }
+    .dot.free   { background: var(--free);    border: 1px solid var(--freeBo); }
+    .dot.booked { background: var(--booked);  border: 1px solid var(--bookedBo); }
+    .dot.selB   { background: var(--selBook); border: 1px solid var(--selBookBo); }
+    .dot.selR   { background: var(--selRel);  border: 1px solid var(--selRelBo); }
+
+    /* ── BUTTONS ── */
+    button {
+      appearance: none; border: 1px solid var(--line); background: var(--btnBg);
+      color: var(--text); padding: 8px 14px; border-radius: 10px;
+      cursor: pointer; font-weight: 800; font-size: 13px; white-space: nowrap;
+    }
+    button:hover { background: var(--btnHover); }
+    button:active { transform: translateY(1px); }
+    button.primary { background: var(--btnPrimBg); border-color: var(--btnPrimBo); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.danger { background: rgba(255,170,60,.16); border-color: rgba(255,170,60,.42); }
+    button.danger:hover { background: rgba(255,170,60,.26); }
+
+    /* ── MATRIX PANEL ── */
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .panelHeader {
+      padding: 12px 16px;
+      background: var(--panel2);
+      border-bottom: 1px solid var(--line);
+      font-weight: 900; font-size: 14px;
+    }
+    .panelHeader .hint { color: var(--muted); font-weight: 600; font-size: 12px; margin-top: 2px; }
+
+    .matrixScroll { overflow-x: auto; }
+
+    table.matrix { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 560px; }
+    table.matrix th, table.matrix td { border: 1px solid var(--line); }
+    table.matrix thead th {
+      padding: 10px 8px; text-align: center;
+      font-size: 12px; font-weight: 900; color: var(--text);
+      background: var(--panel2); white-space: nowrap;
+    }
+    table.matrix tbody th {
+      padding: 8px 10px; text-align: left; background: var(--panel2);
+      font-weight: 900; white-space: nowrap;
+    }
+    table.matrix tbody th .lessonTime { display: block; color: var(--muted); font-weight: 600; font-size: 10px; margin-top: 1px; }
+
+    .cell {
+      padding: 8px 6px; text-align: center; cursor: pointer; user-select: none;
+      min-width: 92px; line-height: 1.25; transition: background .08s;
+    }
+    .cell .cTag { font-weight: 900; font-size: 11px; }
+    .cell .cWho { display: block; font-size: 10px; margin-top: 2px; opacity: .9; }
+    .cell.free    { background: var(--free); }
+    .cell.free:hover { background: rgba(40,200,120,.26); }
+    .cell.free .cTag   { color: rgba(40,220,140,.95); }
+    .cell.booked  { background: var(--booked); }
+    .cell.booked:hover { background: rgba(255,90,90,.28); }
+    .cell.booked .cTag { color: rgba(255,140,140,.95); }
+    .cell.selBook { background: var(--selBook); box-shadow: inset 0 0 0 2px var(--selBookBo); }
+    .cell.selRel  { background: var(--selRel);  box-shadow: inset 0 0 0 2px var(--selRelBo); }
+
+    /* ── ACTION BAR ── */
+    .actionBar {
+      padding: 14px 16px;
+      border-top: 1px solid var(--line);
+      background: var(--panel2);
+      display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+    }
+    .actionBar label { font-size: 12px; font-weight: 900; display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 200px; }
+    .actionBar input[type="text"] {
+      width: 100%; color: var(--text);
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--line); border-radius: 10px;
+      padding: 10px; font-size: 13px; outline: none;
+    }
+    .actionBar input[type="text"]:focus { border-color: rgba(120,180,255,.5); }
+    .actionBar .btnRow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .selSummary { font-size: 12px; color: var(--muted); width: 100%; }
+    .errMsg { font-size: 12px; color: rgba(255,140,140,.95); width: 100%; min-height: 14px; }
+
+    .empty { text-align: center; padding: 48px 16px; color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>RaumFrei – Schulzimmer-Verwaltung</h1>
+    <div class="sub">Schulzimmer für die ganze Woche reservieren und freigeben</div>
+  </div>
+  <div class="apiStatus">
+    <span class="apiDot" id="apiDot"></span>
+    <span id="apiText">Verbinde…</span>
+  </div>
+</header>
+
+<main>
+  <div class="controls">
+    <label>
+      Zimmer
+      <select id="roomSelect" onchange="onRoomChange()"></select>
+    </label>
+    <button onclick="loadRooms()">&#8635; Aktualisieren</button>
+    <div class="legend">
+      <div class="legendItem"><div class="dot free"></div> Frei</div>
+      <div class="legendItem"><div class="dot booked"></div> Belegt</div>
+      <div class="legendItem"><div class="dot selB"></div> Zum Buchen gewählt</div>
+      <div class="legendItem"><div class="dot selR"></div> Zum Freigeben gewählt</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panelHeader">
+      <div id="panelTitle">Wochenplan</div>
+      <div class="hint">Freie Felder anklicken zum Buchen · belegte Felder anklicken zum Freigeben · Mehrfachauswahl möglich</div>
+    </div>
+    <div class="matrixScroll">
+      <div id="matrixContainer">
+        <div class="empty">Lade Zimmer…</div>
+      </div>
+    </div>
+    <div class="actionBar">
+      <label>
+        Ihr Name
+        <input type="text" id="teacherNameInput" placeholder="z. B. M. Müller" />
+      </label>
+      <div class="btnRow">
+        <button class="primary" id="bookBtn" onclick="doBook()" disabled>Buchen</button>
+        <button class="danger" id="releaseBtn" onclick="doRelease()" disabled>Freigeben</button>
+      </div>
+      <div class="selSummary" id="selSummary">Keine Felder gewählt.</div>
+      <div class="errMsg" id="actionErr"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+  /* ════════════════════════════════════
+     CONFIG – API-URL nach dem Deployment
+     in API Gateway hier eintragen.
+     ════════════════════════════════════ */
+  const API_BASE = "https://hhpj6s9ep0.execute-api.eu-central-1.amazonaws.com";
+
+  /* ════════════════════════════════════
+     STAMMDATEN – Tage & Lektionen
+     Zellschlüssel = "<Tag>#<Lektion>", z. B. "Mo#3".
+     ════════════════════════════════════ */
+  const DAYS = [
+    { code: "Mo", label: "Mo" },
+    { code: "Di", label: "Di" },
+    { code: "Mi", label: "Mi" },
+    { code: "Do", label: "Do" },
+    { code: "Fr", label: "Fr" },
+  ];
+  const LESSONS = [
+    { n: 1, time: "07:30–08:20" },
+    { n: 2, time: "08:25–09:15" },
+    { n: 3, time: "09:30–10:20" },
+    { n: 4, time: "10:25–11:15" },
+    { n: 5, time: "11:20–12:10" },
+    { n: 6, time: "13:00–13:50" },
+    { n: 7, time: "13:55–14:45" },
+    { n: 8, time: "14:50–15:40" },
+  ];
+
+  /* ════════════════════════════════════
+     STATE
+     ════════════════════════════════════ */
+  let rooms = [];
+  let currentRoomId = null;
+  let selBook = new Set();   // gewählte freie Zellen (buchen)
+  let selRel  = new Set();   // gewählte belegte Zellen (freigeben)
+
+  function currentRoom() { return rooms.find(r => r.roomId === currentRoomId) || null; }
+
+  /* ════════════════════════════════════
+     API HELPER
+     ════════════════════════════════════ */
+  async function apiFetch(path, options = {}) {
+    const res = await fetch(API_BASE + path, {
+      ...options,
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw { status: res.status, message: body.message || res.statusText, body };
+    return body;
+  }
+
+  /* ════════════════════════════════════
+     ROOMS LADEN
+     ════════════════════════════════════ */
+  async function loadRooms() {
+    try {
+      rooms = await apiFetch("/rooms");
+      setApiStatus(true);
+      renderRoomSelect();
+      // Aktuelles Zimmer beibehalten, sonst erstes wählen.
+      if (!currentRoomId || !rooms.some(r => r.roomId === currentRoomId)) {
+        currentRoomId = rooms.length ? rooms[0].roomId : null;
+      }
+      document.getElementById("roomSelect").value = currentRoomId || "";
+      clearSelection();
+      renderMatrix();
+    } catch {
+      setApiStatus(false);
+      document.getElementById("matrixContainer").innerHTML =
+        '<div class="empty">API nicht erreichbar. URL in der HTML-Datei prüfen.</div>';
+    }
+  }
+
+  function renderRoomSelect() {
+    const sel = document.getElementById("roomSelect");
+    sel.innerHTML = rooms.map(r =>
+      `<option value="${esc(r.roomId)}">${esc(r.name || r.roomId)} — ${esc(r.floor || "")}</option>`
+    ).join("");
+  }
+
+  function onRoomChange() {
+    currentRoomId = document.getElementById("roomSelect").value;
+    clearSelection();
+    renderMatrix();
+  }
+
+  /* ════════════════════════════════════
+     WOCHEN-MATRIX RENDERN
+     ════════════════════════════════════ */
+  function renderMatrix() {
+    const container = document.getElementById("matrixContainer");
+    const room = currentRoom();
+
+    if (!rooms.length) {
+      container.innerHTML = '<div class="empty">Keine Zimmer in der Datenbank gefunden.</div>';
+      return;
+    }
+    if (!room) {
+      container.innerHTML = '<div class="empty">Bitte ein Zimmer wählen.</div>';
+      return;
+    }
+
+    document.getElementById("panelTitle").textContent =
+      `Wochenplan – ${room.name || room.roomId}`;
+
+    const bookings = room.bookings || {};
+
+    const headCols = DAYS.map(d => `<th>${esc(d.label)}</th>`).join("");
+
+    const bodyRows = LESSONS.map(les => {
+      const cells = DAYS.map(d => {
+        const key = `${d.code}#${les.n}`;
+        const who = bookings[key];
+        const isBooked = who !== undefined && who !== null && who !== "";
+        let cls = "cell " + (isBooked ? "booked" : "free");
+        if (selBook.has(key)) cls += " selBook";
+        if (selRel.has(key))  cls += " selRel";
+        const inner = isBooked
+          ? `<span class="cTag">Belegt</span><span class="cWho">${esc(who)}</span>`
+          : `<span class="cTag">Frei</span>`;
+        return `<td class="${cls}" data-key="${esc(key)}" data-booked="${isBooked ? 1 : 0}"
+                    onclick="toggleCell('${esc(key)}', ${isBooked ? 1 : 0})">${inner}</td>`;
+      }).join("");
+      return `<tr>
+        <th>${les.n}. Lektion<span class="lessonTime">${esc(les.time)}</span></th>
+        ${cells}
+      </tr>`;
+    }).join("");
+
+    container.innerHTML = `
+      <table class="matrix">
+        <thead><tr><th>Lektion</th>${headCols}</tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>`;
+
+    updateActionBar();
+  }
+
+  /* ════════════════════════════════════
+     ZELLEN AUSWAHL (Mehrfachauswahl)
+     ════════════════════════════════════ */
+  function toggleCell(key, isBooked) {
+    if (isBooked) {
+      // Belegte Zelle → für Freigabe auswählen.
+      selRel.has(key) ? selRel.delete(key) : selRel.add(key);
+    } else {
+      // Freie Zelle → für Buchung auswählen.
+      selBook.has(key) ? selBook.delete(key) : selBook.add(key);
+    }
+    renderMatrix();
+  }
+
+  function clearSelection() {
+    selBook.clear();
+    selRel.clear();
+    document.getElementById("actionErr").textContent = "";
+  }
+
+  function fmtCell(key) {
+    const [day, n] = key.split("#");
+    return `${day} ${n}. Lektion`;
+  }
+
+  function updateActionBar() {
+    const nameOk = document.getElementById("teacherNameInput").value.trim().length > 0;
+    const bookBtn = document.getElementById("bookBtn");
+    const relBtn  = document.getElementById("releaseBtn");
+
+    bookBtn.disabled = selBook.size === 0 || !nameOk;
+    bookBtn.textContent = selBook.size ? `Buchen (${selBook.size})` : "Buchen";
+    relBtn.disabled = selRel.size === 0;
+    relBtn.textContent = selRel.size ? `Freigeben (${selRel.size})` : "Freigeben";
+
+    const parts = [];
+    if (selBook.size) parts.push(`${selBook.size} zum Buchen: ${[...selBook].map(fmtCell).join(", ")}`);
+    if (selRel.size)  parts.push(`${selRel.size} zum Freigeben: ${[...selRel].map(fmtCell).join(", ")}`);
+    document.getElementById("selSummary").textContent =
+      parts.length ? parts.join("  ·  ") : "Keine Felder gewählt.";
+  }
+
+  /* ════════════════════════════════════
+     BUCHEN (mehrere Zellen auf einmal)
+     ════════════════════════════════════ */
+  async function doBook() {
+    const teacherName = document.getElementById("teacherNameInput").value.trim();
+    const errEl = document.getElementById("actionErr");
+    errEl.textContent = "";
+
+    if (!teacherName) { errEl.textContent = "Bitte Namen eingeben."; return; }
+    if (!selBook.size) return;
+
+    const cells = [...selBook];
+    const btn = document.getElementById("bookBtn");
+    btn.disabled = true; btn.textContent = "Buche…";
+
+    try {
+      await apiFetch("/rooms/book", {
+        method: "POST",
+        body: JSON.stringify({ roomId: currentRoomId, teacherName, cells }),
+      });
+      selBook.clear();
+      await loadRooms();
+    } catch (err) {
+      if (err.status === 409 && err.body?.conflicts) {
+        const list = Object.entries(err.body.conflicts)
+          .map(([k, who]) => `${fmtCell(k)} (${who})`).join(", ");
+        errEl.textContent = `Bereits belegt: ${list}. Bitte erneut laden.`;
+      } else {
+        errEl.textContent = err.message || "Fehler beim Buchen.";
+      }
+    } finally {
+      updateActionBar();
+    }
+  }
+
+  /* ════════════════════════════════════
+     FREIGEBEN (mehrere Zellen auf einmal)
+     ════════════════════════════════════ */
+  async function doRelease() {
+    const errEl = document.getElementById("actionErr");
+    errEl.textContent = "";
+    if (!selRel.size) return;
+
+    const cells = [...selRel];
+    if (!confirm(`${cells.length} Buchung(en) wirklich freigeben?`)) return;
+
+    const btn = document.getElementById("releaseBtn");
+    btn.disabled = true; btn.textContent = "Gebe frei…";
+
+    try {
+      await apiFetch("/rooms/release", {
+        method: "POST",
+        body: JSON.stringify({ roomId: currentRoomId, cells }),
+      });
+      selRel.clear();
+      await loadRooms();
+    } catch (err) {
+      errEl.textContent = err.message || "Fehler beim Freigeben.";
+    } finally {
+      updateActionBar();
+    }
+  }
+
+  /* ════════════════════════════════════
+     HILFSFUNKTIONEN
+     ════════════════════════════════════ */
+  function setApiStatus(ok) {
+    document.getElementById("apiDot").style.background = ok
+      ? "rgba(40,200,120,.85)"
+      : "rgba(255,90,90,.85)";
+    document.getElementById("apiText").textContent = ok ? "Verbunden" : "Nicht erreichbar";
+  }
+
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  /* ════════════════════════════════════
+     INIT
+     ════════════════════════════════════ */
+  document.getElementById("teacherNameInput").addEventListener("input", updateActionBar);
+  loadRooms();
+</script>
+</body>
+</html>
