@@ -12,6 +12,12 @@ client/cloud-init/user-data
 client/cloud-init/meta-data
 *.iso
 
+# Journal und Projektstand bleiben lokal. Beide sind Arbeitsunterlagen fuer
+# den Bericht, nicht Teil des Soll-Zustands, den ansible-pull klont. STATUS.md
+# nennt zudem die AWS-Konto-ID; das Repo ist oeffentlich.
+journal/
+docs/
+
 # Build-Artefakte
 *.zip
 __pycache__/
