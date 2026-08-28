@@ -1,0 +1,82 @@
+---
+# Rolle base - das, was jedes Geraet der Flotte braucht, egal ob Tuerschild
+# oder headless Agent-Container.
+#
+# Bewusst klein gehalten: alles, was hier steht, laeuft bei jedem Pull auf
+# jedem Geraet. Was nur die Anzeigen brauchen, gehoert in die Rolle kiosk.
+
+- name: Paketliste auffrischen (hoechstens stuendlich)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  changed_when: false
+
+- name: Grundpakete
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - openssl        # HMAC im Enrollment
+      - python3
+      - git            # ansible-pull klont damit
+      - ansible        # haelt sich selbst nach, falls jemand es entfernt
+      - systemd-timesyncd
+    state: present
+
+# Ohne Zeitsynchronisation scheitert das Enrollment: der HMAC deckt einen
+# Zeitstempel ab, und das Backend laesst nur 300 s Versatz zu. Eine VM, die
+# aus einem Snapshot mit alter Uhr hochkommt, bekommt sonst 403 und niemand
+# sieht, warum.
+- name: Zeitsynchronisation aktiv
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+    masked: false
+
+# Bewusst ohne community.general.timezone: die Collection ist auf einem
+# frisch installierten ansible-Paket nicht zwingend dabei, und ein Pull, der
+# an einer fehlenden Collection scheitert, meldet FAILED fuer nichts.
+# Symlink plus /etc/timezone ist genau das, was timedatectl auch tut - nur
+# ohne Abhaengigkeit und von Haus aus idempotent.
+- name: Zeitzone Europe/Zurich (Symlink)
+  ansible.builtin.file:
+    src: /usr/share/zoneinfo/Europe/Zurich
+    dest: /etc/localtime
+    state: link
+    force: true
+
+- name: Zeitzone Europe/Zurich (/etc/timezone)
+  ansible.builtin.copy:
+    content: "Europe/Zurich\n"
+    dest: /etc/timezone
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Verzeichnis fuer Konfiguration und Identitaet
+  ansible.builtin.file:
+    path: /etc/raumfrei
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Zustandsverzeichnis
+  ansible.builtin.file:
+    path: /var/lib/raumfrei
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Die Identitaet ist das einzige Geheimnis auf dem Geraet. Wer sie lesen kann,
+# kann sich als das Geraet ausgeben - also nur root, und das wird bei jedem
+# Lauf nachgezogen, nicht nur beim Anlegen.
+- name: Identitaet bleibt nur fuer root lesbar
+  ansible.builtin.file:
+    path: /etc/raumfrei/device.json
+    owner: root
+    group: root
+    mode: "0600"
+  failed_when: false

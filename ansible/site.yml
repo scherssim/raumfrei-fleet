@@ -1,0 +1,47 @@
+---
+# site.yml - Einstiegspunkt fuer ansible-pull.
+#
+# Aufgerufen wird das hier nicht von einem Server, sondern vom Geraet selbst:
+#
+#   ansible-pull --url <pullRepo> --checkout <pullBranch> \
+#                --inventory localhost, --connection local \
+#                --extra-vars @/etc/raumfrei/desired.json \
+#                ansible/site.yml
+#
+# Das ist die Pull-Architektur in einer Zeile: kein eingehender Port, kein
+# Schluessel auf einem Steuerungsserver, kein Inventar, das gepflegt werden
+# muesste. Das Geraet weiss selbst, wer es ist (device.json) und was es sein
+# soll (desired.json) - der Rest steht in diesem Repo.
+#
+# Die Variablen aus desired.json haben als extra-vars die hoechste Praezedenz
+# und ueberschreiben group_vars/all.yml. Ohne desired.json (Handlauf zum
+# Testen) greifen die Vorgaben von dort.
+
+- name: RaumFrei - Soll-Zustand des Geraets herstellen
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Soll-Zustand zusammenfassen
+      ansible.builtin.debug:
+        msg: >-
+          Geraet {{ deviceId | default('unbekannt') }} ·
+          Raum {{ roomId | default('nicht zugewiesen') }} ·
+          Version {{ configVersion | default('-') }} ·
+          Kiosk {{ 'ja' if kiosk_enabled else 'nein' }}
+
+    # Ein widerrufenes Geraet soll nicht auch noch fleissig konfiguriert
+    # werden. Der Agent raeumt bei 403 selbst auf; das hier ist die zweite
+    # Sicherung fuer den Fall, dass ein alter Soll-Zustand noch herumliegt.
+    - name: Abbruch, wenn das Geraet widerrufen oder ausgemustert ist
+      ansible.builtin.fail:
+        msg: "Geraet ist {{ status }} - es wird nichts mehr konfiguriert."
+      when: status | default('ACTIVE') in ['REVOKED', 'RETIRED']
+
+  roles:
+    - role: base
+    - role: agent
+    - role: kiosk
+      when: kiosk_enabled | bool

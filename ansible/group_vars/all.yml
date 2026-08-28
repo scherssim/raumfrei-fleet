@@ -1,0 +1,55 @@
+---
+# group_vars/all.yml - Vorgaben fuer einen Lauf OHNE desired.json.
+#
+# Im Betrieb kommen dieselben Namen aus /etc/raumfrei/desired.json als
+# extra-vars und ueberschreiben alles hier. Diese Datei ist damit zweierlei:
+# die Dokumentation der Schnittstelle zwischen Backend und Ansible, und die
+# Moeglichkeit, das Playbook von Hand gegen ein Geraet zu fahren:
+#
+#   sudo ansible-playbook -i localhost, -c local ansible/site.yml \
+#        -e roomId=201 -e kiosk_force=true
+
+# --- Das schickt das Backend (GET /config/{deviceId}) ----------------------
+deviceId: "unbekannt"
+roomId: null
+displayUrl: null
+roomsApiUrl: ""
+pullRepo: "https://github.com/simonsscherer/raumfrei-fleet"
+pullBranch: "main"
+checkinIntervalSeconds: 2700
+configVersion: "-"
+status: "ACTIVE"
+kiosk:
+  browser: "cog"
+  rotate: 0
+  refreshSeconds: 60
+
+# --- Daraus abgeleitet ------------------------------------------------------
+repo_root: "{{ playbook_dir | dirname }}"
+
+# Ob ein Geraet ein Tuerschild ist, steht NICHT im Backend, sondern im Image:
+# cloud-init legt /etc/raumfrei/kiosk.enabled genau auf den Display-VMs und
+# auf dem Pi an, nicht in den ~20 headless Agent-Containern. Ein Container,
+# der cage und einen Browser installiert, wuerde die Skalierungsmessung
+# verfaelschen und 20-mal denselben Ballast ziehen.
+#
+# Das Backend darf die Kiosk-Rolle global abschalten (kiosk.enabled = false in
+# POST /settings), aber nicht einschalten, wo keine Anzeige haengt.
+kiosk_enabled: >-
+  {{ (kiosk_force | default(false) | bool)
+     or ((kiosk.enabled | default(true) | bool)
+         and ('/etc/raumfrei/kiosk.enabled' is exists)) }}
+
+# Nutzer, unter dem Anzeige und Browser laufen. Kein Login, keine Shell -
+# der Kiosk braucht weder das eine noch das andere.
+display_user: "display"
+display_dir: "/var/lib/raumfrei/display"
+display_port: 8080
+
+# Zuordnung Wunschbrowser -> Paket. Auf Ubuntu 24.04 sind chromium und firefox
+# nur noch als snap zu haben; cog ist der einzige echte .deb-Browser und
+# deshalb die Vorgabe fuer die Tuerschilder.
+kiosk_browser_packages:
+  cog: "cog"
+  chromium: "chromium-browser"
+  firefox: "firefox"

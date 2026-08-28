@@ -1,0 +1,68 @@
+---
+# Rolle agent - der Regelkreis selbst.
+#
+# Der Agent installiert hier seine eigenen Skripte und Units. Das sieht
+# zirkulaer aus, ist aber der Kern der Sache: wer raumfrei-agent loescht oder
+# den Timer maskiert, hat das Geraet genau bis zum naechsten Lauf ausser
+# Betrieb - danach stellt der Pull den Soll-Zustand wieder her. Nur ein
+# Eingriff, der den laufenden Timer UND das Skript zerstoert, haelt stand,
+# und genau dieser Fall ist in der Drift-Matrix als Grenze ausgewiesen.
+
+- name: Skripte des Agenten
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/client/bin/{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - raumfrei-enroll
+    - raumfrei-agent
+
+- name: systemd-Units des Agenten
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/client/units/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - raumfrei-enroll.service
+    - raumfrei-agent.service
+    - raumfrei-agent.timer
+  notify: systemd neu einlesen
+
+# masked: false ist keine Zierde - "systemctl mask" ist das erste, was jemand
+# tut, der den Agenten loswerden will, und es ueberlebt ein blosses "enable".
+- name: Enrollment-Unit aktiv und nicht maskiert
+  ansible.builtin.systemd:
+    name: raumfrei-enroll.service
+    enabled: true
+    masked: false
+    # Nicht ueber den Handler: die Unit muss systemd bekannt sein, BEVOR sie
+    # aktiviert wird - Handler laufen erst am Ende des Plays.
+    daemon_reload: true
+
+- name: Agent-Unit aktiv und nicht maskiert
+  ansible.builtin.systemd:
+    name: raumfrei-agent.service
+    enabled: true
+    masked: false
+
+- name: Timer laeuft
+  ansible.builtin.systemd:
+    name: raumfrei-agent.timer
+    enabled: true
+    masked: false
+    state: started
+
+# Der Takt steht in der Unit (Lektionsenden), nicht im Backend. Weicht das
+# Intervall aus dem Soll-Zustand stark davon ab, ist das ein Hinweis auf eine
+# Fehlkonfiguration - sichtbar im Journal, ohne den Lauf scheitern zu lassen.
+- name: Hinweis, wenn Backend-Intervall und Timer nicht zusammenpassen
+  ansible.builtin.debug:
+    msg: >-
+      Backend erwartet einen Check-in alle {{ checkinIntervalSeconds }} s;
+      der Timer folgt den Lektionsenden. Bei grossen Abweichungen meldet
+      GET /devices die Geraete als STALE.
+  when: checkinIntervalSeconds | int < 1200

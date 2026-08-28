@@ -1,0 +1,8 @@
+{{ {
+  "deviceId": deviceId,
+  "roomId": roomId,
+  "roomsApiUrl": roomsApiUrl,
+  "refreshSeconds": kiosk.refreshSeconds | default(60) | int,
+  "rotate": kiosk.rotate | default(0) | int,
+  "configVersion": configVersion
+} | to_nice_json }}

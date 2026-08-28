@@ -1,0 +1,160 @@
+---
+# Rolle kiosk - aus einem Linux-Rechner wird ein Tuerschild.
+#
+# Laeuft nur, wo /etc/raumfrei/kiosk.enabled liegt (siehe group_vars/all.yml):
+# auf den Display-VMs, nicht in den headless Agent-Containern.
+#
+# Der Aufbau ist absichtlich dreigeteilt:
+#   raumfrei-display.service   liefert die Seite lokal auf 127.0.0.1:8080 aus
+#   raumfrei-kiosk.service     haelt Browser im Vollbild (Restart=always)
+#   config.json                das einzige geraetespezifische Stueck
+# Nur config.json aendert sich, wenn ein Geraet den Raum wechselt. Weder die
+# Seite noch die Units muessen dafuer angefasst werden - das ist der Grund,
+# warum ein Raumwechsel ohne Zugriff auf das Geraet funktioniert.
+
+- name: Pakete fuer Kiosk und Anzeige
+  ansible.builtin.apt:
+    name:
+      - cage            # Wayland-Compositor fuer genau einen Vollbild-Client
+      - "{{ kiosk_browser_packages[kiosk.browser | default('cog')] | default('cog') }}"
+      - fonts-dejavu-core
+    state: present
+
+- name: Vorhandene Gruppen ermitteln
+  ansible.builtin.getent:
+    database: group
+
+- name: Anzeige-Nutzer
+  ansible.builtin.user:
+    name: "{{ display_user }}"
+    system: false
+    shell: /usr/sbin/nologin
+    home: "/home/{{ display_user }}"
+    create_home: true
+    # video/input/render: cage braucht direkten Zugriff auf DRM und Eingabe.
+    # Ohne render bleibt der Schirm auf manchen GPUs schwarz, ohne input
+    # startet cage mit "failed to create backend".
+    #
+    # Geschnitten mit den tatsaechlich vorhandenen Gruppen: "render" gibt es
+    # nicht auf jedem Image, und der user-Modul bricht bei einer unbekannten
+    # Gruppe ab - der Pull meldete dann FAILED fuer eine Gruppe, die auf
+    # diesem Geraet gar keine Rolle spielt.
+    groups: "{{ ['video', 'input', 'render'] | intersect(ansible_facts.getent_group.keys() | list) }}"
+    append: true
+
+- name: UID des Anzeige-Nutzers ermitteln
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ display_user }}"
+
+- name: UID merken
+  ansible.builtin.set_fact:
+    display_uid: "{{ ansible_facts.getent_passwd[display_user][1] }}"
+
+# Ohne linger gibt es kein /run/user/<uid>, und cage bricht mit
+# "XDG_RUNTIME_DIR not set" ab, sobald die Unit vor einem Login startet.
+- name: Sitzung des Anzeige-Nutzers auch ohne Login bereithalten
+  ansible.builtin.command:
+    cmd: "loginctl enable-linger {{ display_user }}"
+    creates: "/var/lib/systemd/linger/{{ display_user }}"
+
+- name: Verzeichnis der Anzeigeseite
+  ansible.builtin.file:
+    path: "{{ display_dir }}"
+    state: directory
+    owner: root
+    group: "{{ display_user }}"
+    mode: "0755"
+
+- name: Anzeigeseite
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/client/display/display.html"
+    dest: "{{ display_dir }}/display.html"
+    owner: root
+    group: "{{ display_user }}"
+    mode: "0644"
+  notify: Kiosk neu starten
+
+# Das einzige geraetespezifische Stueck der Anzeige. Aendert das Backend den
+# Raum, aendert sich diese Datei - und weil configVersion mit drinsteht,
+# meldet der naechste Check-in die Anpassung als changed.
+- name: Konfiguration der Anzeigeseite
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ display_dir }}/config.json"
+    owner: root
+    group: "{{ display_user }}"
+    mode: "0644"
+  notify: Kiosk neu starten
+
+- name: Startskript des Kiosks
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/client/bin/raumfrei-kiosk-start"
+    dest: /usr/local/bin/raumfrei-kiosk-start
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Kiosk neu starten
+
+- name: Umgebung des Kiosks
+  ansible.builtin.template:
+    src: kiosk.env.j2
+    dest: /etc/raumfrei/kiosk.env
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Kiosk neu starten
+
+- name: Units fuer Anzeige und Kiosk
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/client/units/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - raumfrei-display.service
+    - raumfrei-kiosk.service
+  notify:
+    - systemd neu einlesen
+    - Kiosk neu starten
+
+- name: Drop-in-Verzeichnis der Kiosk-Unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/raumfrei-kiosk.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Die Unit im Repo kann die UID nicht kennen - sie ist je nach Image 1000,
+# 1001 oder etwas anderes. Ein Drop-in setzt sie geraetelokal, ohne dass die
+# versionierte Unit ein Geraet kennen muesste.
+- name: XDG_RUNTIME_DIR auf die tatsaechliche UID setzen
+  ansible.builtin.copy:
+    content: |
+      [Service]
+      Environment=XDG_RUNTIME_DIR=/run/user/{{ display_uid }}
+    dest: /etc/systemd/system/raumfrei-kiosk.service.d/runtime-dir.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - systemd neu einlesen
+    - Kiosk neu starten
+
+- name: Anzeige-Dienst laeuft
+  ansible.builtin.systemd:
+    name: raumfrei-display.service
+    enabled: true
+    masked: false
+    state: started
+    # siehe Rolle agent: erst einlesen, dann aktivieren.
+    daemon_reload: true
+
+- name: Kiosk laeuft
+  ansible.builtin.systemd:
+    name: raumfrei-kiosk.service
+    enabled: true
+    masked: false
+    state: started

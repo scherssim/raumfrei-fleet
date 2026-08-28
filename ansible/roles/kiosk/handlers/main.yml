@@ -1,0 +1,13 @@
+---
+- name: systemd neu einlesen
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# Weder cog noch chromium laden eine Seite neu, wenn sich config.json aendert -
+# sie holen die Datei genau einmal beim Start. Ein Raumwechsel wuerde ohne
+# diesen Handler erst beim naechsten Neustart sichtbar.
+- name: Kiosk neu starten
+  ansible.builtin.systemd:
+    name: raumfrei-kiosk.service
+    state: restarted
+  failed_when: false
