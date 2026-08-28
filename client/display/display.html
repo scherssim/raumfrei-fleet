@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RaumFrei Anzeige</title>
+<!--
+  display.html - die Seite, die auf dem Tuerschild laeuft.
+
+  Wird NICHT per file:// geoeffnet, sondern von raumfrei-display.service unter
+  http://127.0.0.1:8080/ ausgeliefert. Grund: unter file:// ist der Origin
+  "null", und localStorage sowie CORS verhalten sich dort je nach Browser
+  unterschiedlich. Der Cache ist hier aber die halbe Miete.
+
+  Konfiguration kommt aus config.json daneben (von der Ansible-Rolle kiosk
+  gerendert):
+      { "roomId": "201", "roomsApiUrl": "https://...", "refreshSeconds": 60,
+        "rotate": 0, "deviceId": "d-...", "configVersion": "..." }
+  Ein ?room=201 in der URL hat Vorrang - so laesst sich die Seite am
+  Arbeitsplatz pruefen, ohne die Konfiguration anzufassen.
+
+  Das Good-Enough-Kriterium "Backend offline -> Displays zeigen weiter den
+  letzten Stand" ist der Grund fuer den localStorage-Cache: faellt /rooms aus,
+  bleibt der zuletzt geholte Plan stehen und die Kopfzeile sagt ehrlich, wie
+  alt er ist. Ein Display, das "API nicht erreichbar" zeigt, ist im Gang
+  wertlos - eines mit einem 20 Minuten alten Plan nicht.
+
+  Keine externen Abhaengigkeiten: die Geraete kommen nur an die API, sonst an
+  nichts. Jede CDN-Zeile waere ein Ausfall in der Wartezeit.
+-->
+<style>
+  :root {
+    --bg:     #0e1116;
+    --panel:  #171c24;
+    --line:   #262e3a;
+    --text:   #eef2f7;
+    --muted:  #8d9aad;
+    --free:   #2fbf71;
+    --busy:   #e5484d;
+    --soon:   #e8a33d;
+    --stale:  #e8a33d;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.4 "Segoe UI", Roboto, system-ui, sans-serif;
+    overflow: hidden;
+  }
+
+  /* Drehung wird hier geloest und nicht im Compositor: cage/wlroots bringt
+     dafuer keinen verlaesslichen Schalter mit, und ein hochkant montiertes
+     Tuerschild soll nicht vom Wayland-Backend abhaengen. */
+  #stage {
+    width: 100vw; height: 100vh;
+    display: flex; flex-direction: column;
+    transform-origin: center center;
+  }
+  body.rot-90  #stage,
+  body.rot-270 #stage { width: 100vh; height: 100vw; }
+  body.rot-90  #stage { transform: rotate(90deg)  translate(0, 0); }
+  body.rot-180 #stage { transform: rotate(180deg); }
+  body.rot-270 #stage { transform: rotate(270deg); }
+  body.rot-90, body.rot-270 { display: flex; align-items: center; justify-content: center; }
+
+  header {
+    display: flex; align-items: baseline; gap: 1rem;
+    padding: 2.2vh 3vw 1.4vh; border-bottom: 1px solid var(--line);
+  }
+  header .room { font-size: 6vh; font-weight: 700; line-height: 1; }
+  header .floor { font-size: 2.2vh; color: var(--muted); }
+  header .clock { margin-left: auto; font-size: 4.5vh; font-weight: 300; font-variant-numeric: tabular-nums; }
+
+  #now {
+    padding: 3vh 3vw; display: flex; align-items: center; gap: 2.5vw;
+    border-bottom: 1px solid var(--line);
+  }
+  #now .light {
+    width: 12vh; height: 12vh; border-radius: 50%; flex: none;
+    background: var(--muted); box-shadow: 0 0 6vh -1vh currentColor;
+  }
+  #now.free .light { background: var(--free); color: var(--free); }
+  #now.busy .light { background: var(--busy); color: var(--busy); }
+  #now .headline { font-size: 7vh; font-weight: 700; line-height: 1.05; }
+  #now.free .headline { color: var(--free); }
+  #now.busy .headline { color: var(--busy); }
+  #now .detail { font-size: 2.6vh; color: var(--muted); margin-top: .6vh; }
+
+  #today { flex: 1; overflow: hidden; padding: 1.5vh 3vw; }
+  #today h2 {
+    font-size: 2vh; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .08em; margin: 0 0 1vh;
+  }
+  .lesson {
+    display: flex; align-items: center; gap: 1.5vw;
+    padding: .9vh 0; border-bottom: 1px solid var(--line); font-size: 2.6vh;
+  }
+  .lesson:last-child { border-bottom: none; }
+  .lesson .time { width: 11vw; min-width: 8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .lesson .who { flex: 1; }
+  .lesson .tag { font-weight: 600; }
+  .lesson.free .tag { color: var(--free); }
+  .lesson.busy .tag { color: var(--busy); }
+  .lesson.past { opacity: .35; }
+  .lesson.current { background: var(--panel); font-weight: 600; border-radius: 6px; padding-left: 1vw; }
+
+  footer {
+    display: flex; gap: 1.5vw; align-items: center;
+    padding: 1.2vh 3vw; border-top: 1px solid var(--line);
+    font-size: 1.8vh; color: var(--muted);
+  }
+  footer .grow { flex: 1; }
+  footer .stale { color: var(--stale); font-weight: 600; }
+  footer .offline-dot {
+    width: .9vh; height: .9vh; border-radius: 50%;
+    background: var(--free); display: inline-block; margin-right: .5vw;
+  }
+  footer.offline .offline-dot { background: var(--stale); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <header>
+    <div>
+      <div class="room" id="roomName">&mdash;</div>
+      <div class="floor" id="roomFloor"></div>
+    </div>
+    <div class="clock" id="clock">--:--</div>
+  </header>
+
+  <div id="now">
+    <div class="light"></div>
+    <div>
+      <div class="headline" id="nowHeadline">Wird geladen</div>
+      <div class="detail" id="nowDetail">Raumplan wird geholt&hellip;</div>
+    </div>
+  </div>
+
+  <div id="today">
+    <h2 id="todayTitle">Heute</h2>
+    <div id="lessons"></div>
+  </div>
+
+  <footer id="foot">
+    <span><span class="offline-dot"></span><span id="freshness">noch kein Stand</span></span>
+    <span class="grow"></span>
+    <span id="deviceInfo"></span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+/* Stammdaten identisch zu RaumFrei.html - Zellschluessel "<Tag>#<Lektion>". */
+var DAY_CODES = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+var LESSONS = [
+  { n: 1, from: "07:30", to: "08:20" },
+  { n: 2, from: "08:25", to: "09:15" },
+  { n: 3, from: "09:30", to: "10:20" },
+  { n: 4, from: "10:25", to: "11:15" },
+  { n: 5, from: "11:20", to: "12:10" },
+  { n: 6, from: "13:00", to: "13:50" },
+  { n: 7, from: "13:55", to: "14:45" },
+  { n: 8, from: "14:50", to: "15:40" }
+];
+
+var CACHE_KEY = "raumfrei.display.cache";
+var config = { roomId: null, roomsApiUrl: "", refreshSeconds: 60, rotate: 0, deviceId: "" };
+var rooms = null;
+var fetchedAt = null;
+var online = false;
+
+function byId(id) { return document.getElementById(id); }
+function pad(n) { return (n < 10 ? "0" : "") + n; }
+function hhmm(date) { return pad(date.getHours()) + ":" + pad(date.getMinutes()); }
+function minutesOf(text) {
+  var parts = text.split(":");
+  return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+}
+function esc(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/* ------------------------------------------------------------ Konfiguration */
+
+async function loadConfig() {
+  try {
+    var res = await fetch("config.json", { cache: "no-store" });
+    if (res.ok) {
+      var loaded = await res.json();
+      for (var key in loaded) { if (loaded[key] !== null) config[key] = loaded[key]; }
+    }
+  } catch (err) {
+    /* Ohne config.json laeuft die Seite trotzdem - dann zaehlt nur ?room=. */
+  }
+  var params = new URLSearchParams(location.search);
+  if (params.get("room")) config.roomId = params.get("room");
+  if (params.get("api")) config.roomsApiUrl = params.get("api");
+  if (params.get("rotate")) config.rotate = parseInt(params.get("rotate"), 10) || 0;
+
+  var rotate = ((parseInt(config.rotate, 10) || 0) % 360 + 360) % 360;
+  if (rotate) document.body.classList.add("rot-" + rotate);
+
+  byId("deviceInfo").textContent =
+    (config.deviceId || "") + (config.configVersion ? " · " + config.configVersion : "");
+}
+
+/* -------------------------------------------------------------------- Daten */
+
+function readCache() {
+  try {
+    var raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (err) {
+    return null;
+  }
+}
+
+function writeCache(payload) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
+  } catch (err) {
+    /* Voller oder gesperrter Speicher darf die Anzeige nicht kippen. */
+  }
+}
+
+async function refresh() {
+  if (config.roomsApiUrl) {
+    try {
+      var base = String(config.roomsApiUrl).replace(/\/+$/, "");
+      var res = await fetch(base + "/rooms", { cache: "no-store" });
+      if (res.ok) {
+        var data = await res.json();
+        if (Array.isArray(data)) {
+          rooms = data;
+          fetchedAt = Date.now();
+          online = true;
+          writeCache({ fetchedAt: fetchedAt, rooms: rooms });
+          render();
+          return;
+        }
+      }
+    } catch (err) {
+      /* faellt unten auf den Cache zurueck */
+    }
+  }
+  online = false;
+  if (!rooms) {
+    var cached = readCache();
+    if (cached && Array.isArray(cached.rooms)) {
+      rooms = cached.rooms;
+      fetchedAt = cached.fetchedAt;
+    }
+  }
+  render();
+}
+
+/* ------------------------------------------------------------- Darstellung */
+
+function currentRoom() {
+  if (!rooms) return null;
+  for (var i = 0; i < rooms.length; i++) {
+    if (String(rooms[i].roomId) === String(config.roomId)) return rooms[i];
+  }
+  return null;
+}
+
+function lessonState(now) {
+  var minutes = now.getHours() * 60 + now.getMinutes();
+  for (var i = 0; i < LESSONS.length; i++) {
+    var from = minutesOf(LESSONS[i].from);
+    var to = minutesOf(LESSONS[i].to);
+    if (minutes >= from && minutes < to) return { index: i, running: true };
+    if (minutes < from) return { index: i, running: false };
+  }
+  return { index: -1, running: false };
+}
+
+function render() {
+  var now = new Date();
+  byId("clock").textContent = hhmm(now);
+
+  var foot = byId("foot");
+  foot.classList.toggle("offline", !online);
+  if (fetchedAt) {
+    var age = Math.round((Date.now() - fetchedAt) / 60000);
+    byId("freshness").innerHTML = online
+      ? "aktuell · " + hhmm(new Date(fetchedAt))
+      : '<span class="stale">Stand von ' + hhmm(new Date(fetchedAt))
+        + " (" + age + " min alt)</span>";
+  } else {
+    byId("freshness").innerHTML = online ? "aktuell" : '<span class="stale">kein Stand verfuegbar</span>';
+  }
+
+  var box = byId("now");
+  var lessons = byId("lessons");
+
+  if (!config.roomId) {
+    byId("roomName").textContent = "Kein Raum";
+    byId("roomFloor").textContent = "";
+    box.className = "";
+    byId("nowHeadline").textContent = "Nicht zugewiesen";
+    byId("nowDetail").textContent = "Diesem Geraet ist im Backend noch kein Raum zugewiesen.";
+    lessons.innerHTML = "";
+    return;
+  }
+
+  var room = currentRoom();
+  byId("roomName").textContent = room ? (room.name || room.roomId) : ("Zimmer " + config.roomId);
+  byId("roomFloor").textContent = room ? (room.floor || "") : "";
+
+  if (!room) {
+    box.className = "";
+    byId("nowHeadline").textContent = "Kein Plan";
+    byId("nowDetail").textContent = fetchedAt
+      ? "Raum " + config.roomId + " kommt im zuletzt geholten Plan nicht vor."
+      : "Raumplan noch nicht geholt.";
+    lessons.innerHTML = "";
+    return;
+  }
+
+  var bookings = room.bookings || {};
+  var dayCode = DAY_CODES[now.getDay()];
+  var state = lessonState(now);
+
+  /* Kopfaussage: laeuft gerade eine Lektion, gilt deren Belegung. Sonst wird
+     die naechste angekuendigt - "jetzt frei" allein hilft niemandem, der vor
+     der Tuer steht und wissen will, ob er in zehn Minuten raus muss. */
+  if (dayCode === "Sa" || dayCode === "So") {
+    box.className = "free";
+    byId("nowHeadline").textContent = "Frei";
+    byId("nowDetail").textContent = "Wochenende – keine Lektionen.";
+  } else if (state.index === -1) {
+    box.className = "free";
+    byId("nowHeadline").textContent = "Frei";
+    byId("nowDetail").textContent = "Ausserhalb der Lektionszeiten.";
+  } else {
+    var lesson = LESSONS[state.index];
+    var who = bookings[dayCode + "#" + lesson.n];
+    if (state.running) {
+      box.className = who ? "busy" : "free";
+      byId("nowHeadline").textContent = who ? "Belegt" : "Frei";
+      byId("nowDetail").textContent = (who ? who + " · " : "")
+        + lesson.n + ". Lektion bis " + lesson.to;
+    } else {
+      box.className = "free";
+      byId("nowHeadline").textContent = "Frei";
+      byId("nowDetail").textContent = who
+        ? "Naechste Lektion " + lesson.from + " – " + who
+        : "Naechste Lektion " + lesson.from + " – ebenfalls frei";
+    }
+  }
+
+  byId("todayTitle").textContent = "Heute · " + dayCode + ", " +
+    now.toLocaleDateString("de-CH", { day: "2-digit", month: "2-digit", year: "numeric" });
+
+  if (dayCode === "Sa" || dayCode === "So") {
+    lessons.innerHTML = '<div class="lesson"><span class="who">Keine Lektionen am Wochenende.</span></div>';
+    return;
+  }
+
+  lessons.innerHTML = LESSONS.map(function (lesson, index) {
+    var who = bookings[dayCode + "#" + lesson.n];
+    var classes = ["lesson", who ? "busy" : "free"];
+    if (state.index === index && state.running) classes.push("current");
+    else if (state.index === -1 || index < state.index) classes.push("past");
+    return '<div class="' + classes.join(" ") + '">'
+      + '<span class="time">' + lesson.from + "–" + lesson.to + "</span>"
+      + '<span class="who">' + (who ? esc(who) : "") + "</span>"
+      + '<span class="tag">' + (who ? "belegt" : "frei") + "</span>"
+      + "</div>";
+  }).join("");
+}
+
+/* ------------------------------------------------------------------- Start */
+
+(async function start() {
+  await loadConfig();
+  var cached = readCache();
+  if (cached && Array.isArray(cached.rooms)) {
+    rooms = cached.rooms;
+    fetchedAt = cached.fetchedAt;
+    render();
+  }
+  await refresh();
+  setInterval(refresh, Math.max(15, parseInt(config.refreshSeconds, 10) || 60) * 1000);
+  setInterval(render, 20000);   /* Uhr und Lektionswechsel, ohne Netzverkehr */
+})();
+</script>
+</body>
+</html>

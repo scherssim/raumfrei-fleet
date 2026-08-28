@@ -6,6 +6,12 @@ secrets.env
 *.env
 !client/cloud-init/*.env.example
 
+# Erzeugte Images-Bestandteile: die fertige user-data traegt das
+# ENROLL_SECRET im Klartext, das Seed-ISO ebenso.
+client/cloud-init/user-data
+client/cloud-init/meta-data
+*.iso
+
 # Build-Artefakte
 *.zip
 __pycache__/

@@ -1,0 +1,60 @@
+#cloud-config
+# ============================================================================
+#  RaumFrei - Golden Image, Erstboot
+#
+#  ACHTUNG: Diese Datei ist eine VORLAGE. Die fertige user-data enthaelt das
+#  Enrollment-Secret im Klartext und darf deshalb NIE ins Repo. Erzeugt wird
+#  sie mit make-user-data.sh, das die Platzhalter unten ersetzt und die
+#  Skripte und Units aus dem Repo einbettet.
+#
+#  Was hier hineingehoert und was nicht, ist die zentrale Entscheidung der
+#  Arbeit:
+#
+#    im Image   Enrollment-Secret und Backend-URL - und sonst nur das, was
+#               noetig ist, um sich einmal anzumelden und einen Pull zu fahren
+#    in Git     der flottenweite Soll-Zustand (Pakete, Units, Kiosk, Anzeige)
+#    im Backend Identitaet, Token, Raumzuweisung, Status
+#
+#  Das Image ist damit fuer alle Geraete identisch. Kein Geraet bekommt eine
+#  eigene Datei, kein Raum steht irgendwo im Image - der Raum kommt beim
+#  ersten Check-in aus dem Backend. Genau deshalb laesst sich ein Display
+#  ersetzen, ohne etwas neu zu bauen.
+# ============================================================================
+
+hostname: @@HOSTNAME@@
+manage_etc_hosts: true
+
+# Kein package_upgrade beim Erstboot: das kostet auf einem Pi mehrere Minuten
+# und wuerde die Zero-Touch-Messung M1 dominieren, ohne fuer die Anzeige etwas
+# beizutragen. Aktualisiert wird spaeter, ueber den Pull.
+package_update: true
+package_upgrade: false
+packages:
+  - ansible
+  - git
+  - curl
+  - openssl
+  - python3
+  - ca-certificates
+
+write_files:
+  # Die einzigen zwei Dinge, die das Geraet mitbringen darf.
+  - path: /etc/raumfrei/agent.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      BACKEND_URL=@@BACKEND_URL@@
+      ENROLL_SECRET=@@ENROLL_SECRET@@
+
+@@FILES@@
+
+runcmd:
+  - [ systemctl, daemon-reload ]
+  # Erst anmelden (oneshot, laeuft genau einmal), dann den ersten Abgleich.
+  # Danach uebernimmt der Timer.
+  - [ systemctl, enable, --now, raumfrei-enroll.service ]
+  - [ systemctl, enable, raumfrei-agent.service ]
+  - [ systemctl, enable, --now, raumfrei-agent.timer ]
+  - [ systemctl, start, raumfrei-agent.service ]
+
+final_message: "RaumFrei: Erstboot nach $UPTIME s abgeschlossen."

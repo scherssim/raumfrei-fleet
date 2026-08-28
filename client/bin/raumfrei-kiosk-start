@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# raumfrei-kiosk-start - startet die Anzeige auf seat0.
+#
+# Wird von raumfrei-kiosk.service aufgerufen, die die Werte aus
+# /etc/raumfrei/kiosk.env mitbringt (von der Ansible-Rolle kiosk gerendert):
+#
+#   KIOSK_URL      http://127.0.0.1:8080/display.html?room=201
+#   KIOSK_BROWSER  Wunschbrowser aus dem Soll-Zustand (cog|chromium|firefox)
+#
+# Zwei Dinge macht dieses Skript, die eine ExecStart-Zeile nicht koennte:
+#
+#   1. Es wartet, bis raumfrei-display.service tatsaechlich antwortet. cog
+#      laedt eine Seite genau einmal; startet der Browser eine Sekunde zu
+#      frueh, steht bis zum naechsten Neustart eine Fehlerseite auf dem
+#      Tuerschild. systemd-Abhaengigkeiten helfen hier nicht, weil der
+#      Python-Server nach dem fork sofort als "gestartet" gilt.
+#
+#   2. Es faellt auf einen vorhandenen Browser zurueck. Der Wunsch aus dem
+#      Backend gewinnt, wenn er installiert ist - sonst die naechste Wahl.
+#      Ein Tuerschild ohne Browser ist schlechter als eines mit dem zweiten.
+#
+# Die gewaehlte Reihenfolge (cog vor chromium vor firefox) ist die Empfehlung
+# fuer Wayland-Kiosks: cog ist ein reiner WebKit-Viewer ohne Chrome-Bedienung,
+# rund 40 MB RSS statt ~250 MB bei chromium.
+
+set -uo pipefail
+
+log() { echo "raumfrei-kiosk: $*"; }
+
+KIOSK_URL="${KIOSK_URL:-http://127.0.0.1:8080/display.html}"
+KIOSK_BROWSER="${KIOSK_BROWSER:-cog}"
+
+# --- 1 Auf den lokalen Auslieferer warten -----------------------------------
+for attempt in $(seq 1 30); do
+    if curl -fsS --max-time 2 -o /dev/null "$KIOSK_URL"; then
+        log "Anzeigeseite antwortet nach ${attempt} Versuch(en)."
+        break
+    fi
+    if [ "$attempt" -eq 30 ]; then
+        # Trotzdem starten: besser eine Fehlerseite als ein schwarzer Schirm,
+        # und Restart=always versucht es in drei Sekunden erneut.
+        log "WARNUNG: ${KIOSK_URL} antwortet nach 30 Versuchen nicht."
+    fi
+    sleep 1
+done
+
+# --- 2 Browser waehlen -------------------------------------------------------
+have() { command -v "$1" >/dev/null 2>&1; }
+
+BROWSER=""
+for candidate in "$KIOSK_BROWSER" cog chromium chromium-browser firefox; do
+    [ -n "$candidate" ] || continue
+    if have "$candidate"; then BROWSER="$candidate"; break; fi
+done
+
+if [ -z "$BROWSER" ]; then
+    log "ABBRUCH: kein Browser gefunden (gewuenscht: ${KIOSK_BROWSER})."
+    exit 1
+fi
+if [ "$BROWSER" != "$KIOSK_BROWSER" ]; then
+    log "Wunschbrowser '${KIOSK_BROWSER}' fehlt, verwende '${BROWSER}'."
+fi
+log "Browser ${BROWSER} auf ${KIOSK_URL}"
+
+case "$BROWSER" in
+    cog)
+        set -- cog "$KIOSK_URL"
+        ;;
+    chromium|chromium-browser)
+        # --incognito verhindert, dass sich ein abgestuerzter Lauf beim
+        # naechsten Start mit "Wiederherstellen?" ueber die Anzeige legt.
+        set -- "$BROWSER" \
+            --kiosk \
+            --incognito \
+            --noerrdialogs \
+            --disable-infobars \
+            --disable-session-crashed-bubble \
+            --disable-features=TranslateUI \
+            --check-for-update-interval=31536000 \
+            --ozone-platform=wayland \
+            "$KIOSK_URL"
+        ;;
+    firefox)
+        set -- firefox --kiosk "$KIOSK_URL"
+        ;;
+esac
+
+# cage haelt genau einen Client im Vollbild auf seat0 - kein Desktop, kein
+# Login-Manager, keine Tastenkombination, die aus dem Kiosk herausfuehrt.
+exec cage -s -- "$@"
