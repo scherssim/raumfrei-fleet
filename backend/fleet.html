@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RaumFrei Flotte &mdash; Administration</title>
+<!--
+  fleet.html - Administrationsseite der Geraeteflotte.
+
+  Spricht ausschliesslich die Admin-Routen von device_handler.py an, alle
+  hinter dem Header X-Admin-Key:
+
+      GET  /devices                    Flottenuebersicht
+      POST /devices/{id}/assign        Raum zuweisen
+      POST /devices/{id}/revoke        Token widerrufen
+      POST /devices/{id}/retire        Geraet ausmustern
+      GET  /settings                   globaler Soll-Zustand
+
+  Bewusst eine einzelne Datei ohne Abhaengigkeiten: sie laeuft per Doppelklick,
+  ohne Buildschritt und ohne Netzzugang ausser zur API.
+
+  Der Admin-Key liegt in sessionStorage, nicht in localStorage - er ueberlebt
+  damit das Schliessen des Tabs nicht. Fuer ein Laborwerkzeug ist das
+  angemessen; in Produktion gehoerte hier ein richtiger Login hin (Cognito
+  oder ein Reverse Proxy davor) statt eines geteilten Geheimnisses im Browser.
+-->
+<style>
+  :root {
+    --bg:      #12151a;
+    --panel:   #1a1f27;
+    --panel-2: #212832;
+    --line:    #2c3540;
+    --text:    #e6ebf2;
+    --muted:   #93a1b3;
+    --accent:  #4a9eff;
+    --ok:      #2fbf71;
+    --drift:   #e8a33d;
+    --failed:  #e5484d;
+    --stale:   #7d8899;
+    --pending: #8b5cf6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 0 3rem;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: .75rem; align-items: center;
+    padding: 1rem 1.5rem; background: var(--panel);
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 1.15rem; margin: 0 1rem 0 0; font-weight: 600; }
+  header .grow { flex: 1; }
+  input, select, button {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px; padding: .4rem .6rem;
+  }
+  input::placeholder { color: var(--muted); }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06131f; font-weight: 600; }
+  button.danger:hover { border-color: var(--failed); color: var(--failed); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+
+  main { padding: 1.25rem 1.5rem; }
+  .cards { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1.25rem; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: .7rem 1.1rem; min-width: 8.5rem;
+  }
+  .card .n { font-size: 1.6rem; font-weight: 600; line-height: 1.1; }
+  .card .l { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:hover { background: var(--panel-2); }
+  td.mono, th.mono { font-family: Consolas, "SF Mono", monospace; font-size: .85rem; }
+  .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: .4rem;
+    padding: .12rem .55rem; border-radius: 999px; font-size: .8rem; font-weight: 600;
+    border: 1px solid currentColor;
+  }
+  .dot { width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; }
+  .c-COMPLIANT      { color: var(--ok); }
+  .c-DRIFT          { color: var(--drift); }
+  .c-FAILED         { color: var(--failed); }
+  .c-STALE          { color: var(--stale); }
+  .c-PENDING_CONFIG { color: var(--pending); }
+  .c-UNBEKANNT      { color: var(--muted); }
+  .s-ACTIVE  { color: var(--ok); }
+  .s-PENDING { color: var(--drift); }
+  .s-REVOKED { color: var(--failed); }
+  .s-RETIRED { color: var(--stale); }
+
+  .ver-ok   { color: var(--ok); }
+  .ver-diff { color: var(--drift); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .actions { display: flex; gap: .35rem; flex-wrap: wrap; }
+  .actions button { padding: .25rem .5rem; font-size: .82rem; }
+
+  #msg {
+    margin: 0 0 1rem; padding: .6rem .9rem; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel); display: none;
+  }
+  #msg.err { border-color: var(--failed); color: var(--failed); display: block; }
+  #msg.ok  { border-color: var(--ok);     color: var(--ok);     display: block; }
+
+  details.settings { margin-top: 1.5rem; }
+  details.settings summary { cursor: pointer; color: var(--muted); }
+  details.settings pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: .9rem; overflow-x: auto; font-size: .85rem;
+  }
+  .empty { padding: 2.5rem; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RaumFrei &mdash; Flotte</h1>
+  <input id="backendUrl" size="42" placeholder="https://&lt;api-id&gt;.execute-api.eu-central-1.amazonaws.com">
+  <input id="adminKey" type="password" size="26" placeholder="X-Admin-Key">
+  <button class="primary" id="loadBtn">Laden</button>
+  <label class="muted"><input type="checkbox" id="autoRefresh"> alle 30 s</label>
+  <span class="grow"></span>
+  <span class="muted" id="lastLoad">noch nicht geladen</span>
+</header>
+
+<main>
+  <div id="msg"></div>
+  <div class="cards" id="cards"></div>
+
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="mono">deviceId</th>
+          <th>Host / Modell</th>
+          <th>Raum</th>
+          <th>Status</th>
+          <th>Compliance</th>
+          <th>Letzter Check-in</th>
+          <th class="mono">Soll / Ist</th>
+          <th>Letzter Lauf</th>
+          <th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="9" class="empty">Backend-URL und Admin-Key eintragen, dann &laquo;Laden&raquo;.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <details class="settings">
+    <summary>Globaler Soll-Zustand (GET /settings)</summary>
+    <pre id="settings">&mdash;</pre>
+  </details>
+</main>
+
+<script>
+"use strict";
+
+var byId = function (id) { return document.getElementById(id); };
+var devices = [];
+var timer = null;
+
+/* Die Backend-URL ist kein Geheimnis und darf localStorage ueberleben.
+   Der Admin-Key nicht: sessionStorage endet mit dem Tab. */
+byId("backendUrl").value = localStorage.getItem("raumfrei.backendUrl") || "";
+byId("adminKey").value   = sessionStorage.getItem("raumfrei.adminKey") || "";
+
+function base() { return byId("backendUrl").value.trim().replace(/\/+$/, ""); }
+function adminKey() { return byId("adminKey").value.trim(); }
+
+function say(text, kind) {
+  var box = byId("msg");
+  box.textContent = text;
+  box.className = kind || "";
+  if (!kind) box.style.display = "none";
+}
+
+async function api(path, options) {
+  options = options || {};
+  var headers = { "X-Admin-Key": adminKey() };
+  if (options.body) headers["Content-Type"] = "application/json";
+  var res = await fetch(base() + path, {
+    method: options.method || "GET",
+    headers: headers,
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+  var body = {};
+  try { body = await res.json(); } catch (e) { /* leerer Body ist zulaessig */ }
+  if (!res.ok) throw new Error((body && body.message) || (res.status + " " + res.statusText));
+  return body;
+}
+
+/* ---------------------------------------------------------- Darstellung */
+
+function esc(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function relative(seconds) {
+  if (seconds === null || seconds === undefined) return "&mdash;";
+  if (seconds < 90) return "vor " + seconds + " s";
+  if (seconds < 5400) return "vor " + Math.round(seconds / 60) + " min";
+  if (seconds < 172800) return "vor " + Math.round(seconds / 3600) + " h";
+  return "vor " + Math.round(seconds / 86400) + " Tagen";
+}
+
+function pill(prefix, value) {
+  return '<span class="pill ' + prefix + esc(value) + '"><span class="dot"></span>'
+       + esc(value) + "</span>";
+}
+
+function lastRun(device) {
+  var report = device.lastReport || {};
+  var a = report.ansible;
+  if (!a) return '<span class="muted">&mdash;</span>';
+  var duration = a.duration !== undefined ? " &middot; " + a.duration + " s" : "";
+  return '<span class="mono">ok=' + (a.ok || 0) + " changed=" + (a.changed || 0)
+       + " failed=" + (a.failed || 0) + "</span>"
+       + '<span class="muted">' + duration + "</span>";
+}
+
+function card(number, label, cls) {
+  return '<div class="card"><div class="n ' + (cls || "") + '">' + number
+       + '</div><div class="l">' + label + "</div></div>";
+}
+
+function render() {
+  var counts = { COMPLIANT: 0, DRIFT: 0, FAILED: 0, STALE: 0, PENDING_CONFIG: 0 };
+  devices.forEach(function (d) {
+    var c = d.compliance || "UNBEKANNT";
+    if (counts[c] !== undefined) counts[c] += 1;
+  });
+
+  byId("cards").innerHTML =
+      card(devices.length, "Geraete", "")
+    + card(counts.COMPLIANT, "Compliant", "c-COMPLIANT")
+    + card(counts.DRIFT, "Drift", "c-DRIFT")
+    + card(counts.FAILED, "Failed", "c-FAILED")
+    + card(counts.STALE, "Stale", "c-STALE")
+    + card(counts.PENDING_CONFIG, "Config offen", "c-PENDING_CONFIG");
+
+  if (!devices.length) {
+    byId("rows").innerHTML = '<tr><td colspan="9" class="empty">Noch kein Geraet angemeldet.</td></tr>';
+    return;
+  }
+
+  byId("rows").innerHTML = devices.map(function (d) {
+    var soll = d.desiredConfigVersion || "";
+    var ist  = d.reportedConfigVersion || "";
+    var same = soll && ist && soll === ist;
+    var revoked = d.status === "REVOKED" || d.status === "RETIRED";
+    return "<tr>"
+      + '<td class="mono">' + esc(d.deviceId) + "</td>"
+      + "<td>" + esc(d.hostname || "—")
+        + '<br><span class="muted">' + esc(d.model || "") + "</span></td>"
+      + "<td>" + (d.roomId ? esc(d.roomId) : '<span class="muted">nicht zugewiesen</span>') + "</td>"
+      + "<td>" + pill("s-", d.status || "PENDING") + "</td>"
+      + "<td>" + pill("c-", d.compliance || "UNBEKANNT") + "</td>"
+      + "<td>" + relative(d.staleSeconds)
+        + '<br><span class="muted mono">' + esc(d.lastCheckin || "") + "</span></td>"
+      + '<td class="mono ' + (same ? "ver-ok" : "ver-diff") + '">'
+        + esc(soll || "—") + "<br>" + esc(ist || "—") + "</td>"
+      + "<td>" + lastRun(d) + "</td>"
+      + '<td><div class="actions">'
+        + '<button data-act="assign" data-id="' + esc(d.deviceId) + '">Raum</button>'
+        + '<button class="danger" data-act="revoke" data-id="' + esc(d.deviceId) + '"'
+          + (revoked ? " disabled" : "") + ">Revoke</button>"
+        + '<button class="danger" data-act="retire" data-id="' + esc(d.deviceId) + '"'
+          + (d.status === "RETIRED" ? " disabled" : "") + ">Retire</button>"
+      + "</div></td>"
+      + "</tr>";
+  }).join("");
+}
+
+/* -------------------------------------------------------------- Aktionen */
+
+async function load() {
+  if (!base() || !adminKey()) { say("Backend-URL und Admin-Key werden beide gebraucht.", "err"); return; }
+  localStorage.setItem("raumfrei.backendUrl", base());
+  sessionStorage.setItem("raumfrei.adminKey", adminKey());
+  try {
+    var data = await api("/devices");
+    devices = data.devices || [];
+    byId("settings").textContent = JSON.stringify(data.settings || {}, null, 2);
+    byId("lastLoad").textContent = "Stand " + new Date().toLocaleTimeString("de-CH");
+    say("", "");
+    render();
+  } catch (err) {
+    say("Laden fehlgeschlagen: " + err.message, "err");
+  }
+}
+
+async function act(action, deviceId) {
+  var body;
+  if (action === "assign") {
+    var current = "";
+    devices.forEach(function (d) { if (d.deviceId === deviceId) current = d.roomId || ""; });
+    var roomId = prompt("Raum-ID fuer " + deviceId + " (z. B. 201):", current);
+    if (!roomId) return;
+    body = { roomId: roomId.trim() };
+  } else if (!confirm(action.toUpperCase() + " fuer " + deviceId + " ausfuehren?")) {
+    return;
+  }
+  try {
+    var result = await api("/devices/" + encodeURIComponent(deviceId) + "/" + action,
+                           { method: "POST", body: body });
+    say(result.message || "Erledigt.", "ok");
+    await load();
+  } catch (err) {
+    say(action + " fehlgeschlagen: " + err.message, "err");
+  }
+}
+
+byId("loadBtn").addEventListener("click", load);
+byId("rows").addEventListener("click", function (event) {
+  var button = event.target.closest("button[data-act]");
+  if (button) act(button.dataset.act, button.dataset.id);
+});
+byId("autoRefresh").addEventListener("change", function (event) {
+  if (timer) { clearInterval(timer); timer = null; }
+  if (event.target.checked) timer = setInterval(load, 30000);
+});
+document.addEventListener("keydown", function (event) {
+  if (event.key === "Enter" && document.activeElement.tagName === "INPUT") load();
+});
+
+if (base() && adminKey()) load();
+</script>
+</body>
+</html>
