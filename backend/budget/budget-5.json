@@ -1,0 +1,9 @@
+{
+  "BudgetName": "RaumFrei-Lab",
+  "BudgetLimit": {
+    "Amount": "5",
+    "Unit": "USD"
+  },
+  "TimeUnit": "MONTHLY",
+  "BudgetType": "COST"
+}

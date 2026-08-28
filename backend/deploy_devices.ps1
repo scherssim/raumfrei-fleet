@@ -28,6 +28,43 @@ $SecretsFile = Join-Path $PSScriptRoot "secrets.env"
 
 Set-Location $PSScriptRoot
 
+# Ein AWS-Aufruf, der fehlschlagen DARF (Pruefung auf Vorhandensein).
+# Achtung: Windows PowerShell 5.1 wirft bei nativen Programmen keine Exception,
+# try/catch greift hier NICHT - es zaehlt allein $LASTEXITCODE.
+# Rueckgabe: Ausgabe als String, oder $null wenn der Aufruf fehlgeschlagen ist.
+function Invoke-AwsProbe {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $out = & aws @args 2>$null
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $old
+    if ($code -ne 0) { return $null }
+    return ($out | Out-String).Trim()
+}
+
+# Windows PowerShell 5.1 schreibt bei "-Encoding utf8" IMMER ein BOM - es gibt
+# dort kein "utf8NoBOM" wie ab PowerShell 6. Das kostet an zwei Stellen:
+#
+#   * IAM lehnt ein Policy-Dokument mit BOM ab, mit der wenig hilfreichen
+#     Meldung "MalformedPolicyDocument: Syntax errors in policy".
+#   * bash bricht beim Einlesen von secrets.env ueber der ersten Zeile ab
+#     ("DEVICE_ID_SALT=...: command not found"), weil das BOM Teil des
+#     Variablennamens wird. test_api.sh laeuft dann mit leerem Salt.
+#
+# Der Pfad wird ueber die SessionState aufgeloest: .NET kennt das aktuelle
+# Verzeichnis von PowerShell nicht, ein relativer Pfad landete sonst irgendwo.
+function Write-Utf8NoBom {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$Lines,
+        [switch]$NoNewline
+    )
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $text = ($Lines -join "`n")
+    if (-not $NoNewline -and $text.Length -gt 0) { $text += "`n" }
+    [System.IO.File]::WriteAllText($full, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 Write-Host ""
 Write-Host "============================================"
 Write-Host "  RaumFrei Geraeteseite - Deployment"
@@ -49,9 +86,15 @@ if (Test-Path $SecretsFile) {
     }
     Write-Host "      secrets.env gefunden, Werte werden wiederverwendet."
 } else {
+    # RandomNumberGenerator::Fill() gibt es erst ab .NET Core 2.0. Windows
+    # PowerShell 5.1 laeuft auf .NET Framework 4.x und antwortet mit
+    # "MethodNotFound". ::Create() existiert in beiden Welten und liefert
+    # denselben kryptographisch sicheren Generator - Get-Random taete es NICHT,
+    # der ist nicht fuer Geheimnisse gedacht.
     function New-Secret {
         $bytes = New-Object byte[] 32
-        [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
         return [System.BitConverter]::ToString($bytes).Replace("-", "").ToLower()
     }
     $secrets = @{
@@ -60,16 +103,15 @@ if (Test-Path $SecretsFile) {
         DEVICE_ID_SALT  = New-Secret
     }
     $lines = $secrets.Keys | ForEach-Object { "$_=$($secrets[$_])" }
-    Set-Content -Path $SecretsFile -Value $lines -Encoding utf8
+    Write-Utf8NoBom -Path $SecretsFile -Lines $lines
     Write-Host "      Neue Secrets erzeugt und in secrets.env abgelegt."
     Write-Host "      ACHTUNG: Diese Datei gehoert NICHT ins Git-Repo." -ForegroundColor Yellow
 }
 
 # --- 3 DynamoDB -------------------------------------------------------------
 Write-Host "[3/7] DynamoDB-Tabelle '$TableName'..."
-$tableExists = $true
-try { aws dynamodb describe-table --table-name $TableName --region $Region | Out-Null }
-catch { $tableExists = $false }
+$tableExists = $null -ne (Invoke-AwsProbe dynamodb describe-table `
+    --table-name $TableName --region $Region)
 
 if ($tableExists) {
     Write-Host "      Tabelle existiert bereits."
@@ -92,9 +134,9 @@ if ($tableExists) {
 
 # --- 4 IAM-Rolle ------------------------------------------------------------
 Write-Host "[4/7] IAM-Rolle '$RoleName'..."
-$roleExists = $true
-try { $RoleArn = (aws iam get-role --role-name $RoleName --query "Role.Arn" --output text) }
-catch { $roleExists = $false }
+$RoleArn = Invoke-AwsProbe iam get-role --role-name $RoleName `
+    --query "Role.Arn" --output text
+$roleExists = $null -ne $RoleArn
 
 if (-not $roleExists) {
     $RoleArn = (aws iam create-role `
@@ -115,10 +157,19 @@ $policy = (Get-Content "iam/devices-policy.json" -Raw).
     Replace("{{ACCOUNT_ID}}", $AccountId).
     Replace("{{TABLE_NAME}}", $TableName)
 $policyPath = Join-Path $env:TEMP "raumfrei-devices-policy.json"
-Set-Content -Path $policyPath -Value $policy -Encoding utf8
+Write-Utf8NoBom -Path $policyPath -Lines $policy
 aws iam put-role-policy --role-name $RoleName --policy-name $PolicyName `
     --policy-document "file://$policyPath" | Out-Null
+$policyRc = $LASTEXITCODE
 Remove-Item $policyPath
+
+# Ohne diese Pruefung meldete das Skript "Policy gesetzt", obwohl IAM
+# abgelehnt hatte - die Lambda stand danach ohne jedes Recht auf die Tabelle
+# da und haette jede Route mit 502 beantwortet. Ein Deployment, das seinen
+# eigenen Fehlschlag uebergeht, ist schlimmer als keines.
+if ($policyRc -ne 0) {
+    throw "PutRolePolicy fehlgeschlagen (Exit $policyRc). Ohne Policy hat die Lambda keine Rechte auf $TableName."
+}
 Write-Host "      Policy '$PolicyName' gesetzt (nur Tabelle $TableName + Logs)."
 
 # --- 5 Lambda ---------------------------------------------------------------
@@ -131,9 +182,8 @@ $envVars = "Variables={DEVICES_TABLE=$TableName," +
            "ADMIN_KEY=$($secrets.ADMIN_KEY)," +
            "DEVICE_ID_SALT=$($secrets.DEVICE_ID_SALT)}"
 
-$lambdaExists = $true
-try { aws lambda get-function --function-name $LambdaName --region $Region | Out-Null }
-catch { $lambdaExists = $false }
+$lambdaExists = $null -ne (Invoke-AwsProbe lambda get-function `
+    --function-name $LambdaName --region $Region)
 
 if ($lambdaExists) {
     aws lambda update-function-code --function-name $LambdaName `
@@ -172,10 +222,21 @@ if ($ApiId -eq "None" -or [string]::IsNullOrWhiteSpace($ApiId)) {
     Write-Host "      Bestehende API wiederverwendet (ID: $ApiId)."
 }
 
-$IntegrationId = (aws apigatewayv2 create-integration --api-id $ApiId `
-    --integration-type AWS_PROXY `
-    --integration-uri "arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations" `
-    --payload-format-version 2.0 --region $Region --query "IntegrationId" --output text)
+# Vorhandene Integration wiederverwenden. Sonst entsteht bei jedem Re-Deploy
+# eine neue und die alten bleiben als Karteileichen an der API haengen.
+$IntegrationUri = "arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"
+$IntegrationId = (aws apigatewayv2 get-integrations --api-id $ApiId --region $Region `
+    --query "Items[?IntegrationUri=='$IntegrationUri'].IntegrationId | [0]" --output text)
+
+if ($IntegrationId -eq "None" -or [string]::IsNullOrWhiteSpace($IntegrationId)) {
+    $IntegrationId = (aws apigatewayv2 create-integration --api-id $ApiId `
+        --integration-type AWS_PROXY `
+        --integration-uri $IntegrationUri `
+        --payload-format-version 2.0 --region $Region --query "IntegrationId" --output text)
+    Write-Host "      Integration erstellt (ID: $IntegrationId)."
+} else {
+    Write-Host "      Integration wiederverwendet (ID: $IntegrationId)."
+}
 
 $routes = @(
     "POST /enroll",
@@ -206,23 +267,23 @@ foreach ($route in $routes) {
 }
 
 # Lambda-Permission: API Gateway darf die Funktion aufrufen.
-try {
-    aws lambda add-permission --function-name $LambdaName `
-        --statement-id "apigw-$ApiId" --action lambda:InvokeFunction `
-        --principal apigateway.amazonaws.com `
-        --source-arn "arn:aws:execute-api:${Region}:${AccountId}:${ApiId}/*/*" `
-        --region $Region | Out-Null
+$permission = Invoke-AwsProbe lambda add-permission --function-name $LambdaName `
+    --statement-id "apigw-$ApiId" --action lambda:InvokeFunction `
+    --principal apigateway.amazonaws.com `
+    --source-arn "arn:aws:execute-api:${Region}:${AccountId}:${ApiId}/*/*" `
+    --region $Region
+
+if ($null -ne $permission) {
     Write-Host "      Permission gesetzt."
-} catch {
+} else {
     Write-Host "      Permission existiert bereits."
 }
 
 # --- 7 Ergebnis -------------------------------------------------------------
 $ApiUrl = "https://$ApiId.execute-api.$Region.amazonaws.com"
-Add-Content -Path $SecretsFile -Value "" -Encoding utf8
 $content = Get-Content $SecretsFile | Where-Object { $_ -notmatch "^BACKEND_URL=" -and $_ -ne "" }
 $content += "BACKEND_URL=$ApiUrl"
-Set-Content -Path $SecretsFile -Value $content -Encoding utf8
+Write-Utf8NoBom -Path $SecretsFile -Lines $content
 
 Write-Host ""
 Write-Host "[7/7] Fertig."

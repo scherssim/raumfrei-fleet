@@ -1,0 +1,71 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "KontoErmitteln",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "NurDieDevicesTabelle",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:UpdateTimeToLive"
+      ],
+      "Resource": "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{TABLE_NAME}}"
+    },
+    {
+      "Sid": "NurDieLambdaRolle",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::{{ACCOUNT_ID}}:role/RaumFreiDeviceLambdaRole"
+    },
+    {
+      "Sid": "RolleNurAnLambdaDurchreichen",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "NurDieseEineFunktion",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateFunction",
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:AddPermission"
+      ],
+      "Resource": "arn:aws:lambda:{{REGION}}:{{ACCOUNT_ID}}:function:RaumFreiDeviceHandler"
+    },
+    {
+      "Sid": "HttpApiVerwalten",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:GET",
+        "apigateway:POST",
+        "apigateway:PATCH"
+      ],
+      "Resource": [
+        "arn:aws:apigateway:{{REGION}}::/apis",
+        "arn:aws:apigateway:{{REGION}}::/apis/*"
+      ]
+    }
+  ]
+}
