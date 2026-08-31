@@ -5,7 +5,7 @@
 # /etc/raumfrei/kiosk.env mitbringt (von der Ansible-Rolle kiosk gerendert):
 #
 #   KIOSK_URL      http://127.0.0.1:8080/display.html?room=201
-#   KIOSK_BROWSER  Wunschbrowser aus dem Soll-Zustand (surf|cog|chromium|firefox)
+#   KIOSK_BROWSER  Wunschbrowser aus dem Soll-Zustand (luakit|cog|chromium|firefox)
 #
 # Zwei Dinge macht dieses Skript, die eine ExecStart-Zeile nicht koennte:
 #
@@ -20,20 +20,22 @@
 #      Backend gewinnt, wenn er installiert ist - sonst die naechste Wahl.
 #      Ein Tuerschild ohne Browser ist schlechter als eines mit dem zweiten.
 #
-# Die Reihenfolge (surf vor cog vor chromium vor firefox) folgt dem Grundsatz
+# Die Reihenfolge (luakit vor cog vor chromium vor firefox) folgt dem Grundsatz
 # fuer Wayland-Kiosks: ein reiner WebKit-Viewer ohne Bedienelemente, rund
 # 40 MB RSS statt ~250 MB bei chromium.
 #
-# surf steht seit dem 31.08.2026 vor cog, weil cog in Ubuntu 24.04 gar nicht
-# paketiert ist; cog bleibt in der Liste, weil es unter Debian die bessere
-# Wahl waere. Siehe group_vars/all.yml.
+# luakit steht seit dem 31.08.2026 vor cog, weil cog in Ubuntu 24.04 gar
+# nicht paketiert ist; cog bleibt in der Liste, weil es unter Debian die
+# bessere Wahl waere. surf taucht bewusst NICHT auf: es ist zwar ein echtes
+# .deb, aber X11-only und stirbt unter cage an BadWindow. Siehe
+# group_vars/all.yml.
 
 set -uo pipefail
 
 log() { echo "raumfrei-kiosk: $*"; }
 
 KIOSK_URL="${KIOSK_URL:-http://127.0.0.1:8080/display.html}"
-KIOSK_BROWSER="${KIOSK_BROWSER:-surf}"
+KIOSK_BROWSER="${KIOSK_BROWSER:-luakit}"
 
 # --- 1 Auf den lokalen Auslieferer warten -----------------------------------
 for attempt in $(seq 1 30); do
@@ -53,7 +55,7 @@ done
 have() { command -v "$1" >/dev/null 2>&1; }
 
 BROWSER=""
-for candidate in "$KIOSK_BROWSER" surf cog chromium chromium-browser firefox; do
+for candidate in "$KIOSK_BROWSER" luakit cog chromium chromium-browser firefox; do
     [ -n "$candidate" ] || continue
     if have "$candidate"; then BROWSER="$candidate"; break; fi
 done
@@ -68,14 +70,6 @@ fi
 log "Browser ${BROWSER} auf ${KIOSK_URL}"
 
 case "$BROWSER" in
-    surf)
-        # surf kennt keine Bedienelemente und keinen Vollbildschalter - cage
-        # macht den einzigen Client ohnehin bildschirmfuellend.
-        set -- surf "$KIOSK_URL"
-        ;;
-    cog)
-        set -- cog "$KIOSK_URL"
-        ;;
     chromium|chromium-browser)
         # --incognito verhindert, dass sich ein abgestuerzter Lauf beim
         # naechsten Start mit "Wiederherstellen?" ueber die Anzeige legt.
@@ -92,6 +86,16 @@ case "$BROWSER" in
         ;;
     firefox)
         set -- firefox --kiosk "$KIOSK_URL"
+        ;;
+    *)
+        # cog, luakit und jeder andere minimale Viewer nehmen die URL als
+        # einziges Argument; cage macht den Client ohnehin
+        # bildschirmfuellend, einen Vollbildschalter braucht keiner davon.
+        #
+        # Dieser Zweig ist zugleich der Rueckfall fuer einen unbekannten
+        # Wunschbrowser. Vorher gab es ihn nicht: "$@" blieb leer und cage
+        # startete ohne Client, also mit schwarzem Schirm und ohne Fehler.
+        set -- "$BROWSER" "$KIOSK_URL"
         ;;
 esac
 

@@ -20,7 +20,7 @@ checkinIntervalSeconds: 2700
 configVersion: "-"
 status: "ACTIVE"
 kiosk:
-  browser: "surf"
+  browser: "luakit"
   rotate: 0
   refreshSeconds: 60
 
@@ -62,13 +62,20 @@ display_port: 8080
 #                     der Grund, aus dem schon das Cloud-Image statt des
 #                     Server-Installers gewaehlt wurde.
 #   firefox           dasselbe Muster.
-#   surf              echtes .deb aus dem Archiv, WebKitGTK wie cog, ohne
-#                     Bedienelemente. Deshalb jetzt die Vorgabe.
+#   surf              echtes .deb, WebKitGTK - aber X11-only. Ruft
+#                     gdk_x11_window_get_xid() ohne Ruecksicht auf den
+#                     Backend auf und stirbt unter Wayland an BadWindow.
+#                     Unbrauchbar, das Tuerschild faehrt Wayland.
+#   luakit            echtes .deb, WebKitGTK, Wayland-tauglich. Am 31.08.
+#                     unter cage geprueft: laeuft. Deshalb die Vorgabe.
+#                     Einschraenkung: luakit zeigt unten eine einzeilige
+#                     Statusleiste, die sich nur ueber eine eigene rc.lua
+#                     abschalten laesst - kosmetisch, gehoert in den Bericht.
 #
 # Die uebrigen Eintraege bleiben als Ausweichmoeglichkeit stehen; welcher
 # Browser laeuft, entscheidet das Backend ueber kiosk.browser.
 kiosk_browser_packages:
-  surf: "surf"
+  luakit: "luakit"
   cog: "cog"
   chromium: "chromium-browser"
   firefox: "firefox"
