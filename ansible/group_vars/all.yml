@@ -20,7 +20,7 @@ checkinIntervalSeconds: 2700
 configVersion: "-"
 status: "ACTIVE"
 kiosk:
-  browser: "cog"
+  browser: "surf"
   rotate: 0
   refreshSeconds: 60
 
@@ -46,10 +46,29 @@ display_user: "display"
 display_dir: "/var/lib/raumfrei/display"
 display_port: 8080
 
-# Zuordnung Wunschbrowser -> Paket. Auf Ubuntu 24.04 sind chromium und firefox
-# nur noch als snap zu haben; cog ist der einzige echte .deb-Browser und
-# deshalb die Vorgabe fuer die Tuerschilder.
+# Zuordnung Wunschbrowser -> Paket.
+#
+# Am 31.08.2026 auf display-a nachgemessen, nachdem die Rolle mit "No package
+# matching 'cog' is available" abbrach:
+#
+#   cog               gibt es in Ubuntu 24.04 UEBERHAUPT nicht - weder in
+#                     universe noch sonstwo; "apt-cache search ^cog" ist leer.
+#                     Das Paket ist Debian-only. (Hier stand vorher, cog sei
+#                     der einzige echte .deb-Browser. Das war falsch.)
+#   chromium-browser  existiert nur als Snap-Platzhalter (2:1snap1-0ubuntu2):
+#                     apt meldet EIN Paket, der postinst laedt dann rund
+#                     170 MB Snap nach. Das faellt mitten in die
+#                     Provisionierung und dominiert die Messreihe M1 - genau
+#                     der Grund, aus dem schon das Cloud-Image statt des
+#                     Server-Installers gewaehlt wurde.
+#   firefox           dasselbe Muster.
+#   surf              echtes .deb aus dem Archiv, WebKitGTK wie cog, ohne
+#                     Bedienelemente. Deshalb jetzt die Vorgabe.
+#
+# Die uebrigen Eintraege bleiben als Ausweichmoeglichkeit stehen; welcher
+# Browser laeuft, entscheidet das Backend ueber kiosk.browser.
 kiosk_browser_packages:
+  surf: "surf"
   cog: "cog"
   chromium: "chromium-browser"
   firefox: "firefox"

@@ -5,12 +5,13 @@
 # /etc/raumfrei/kiosk.env mitbringt (von der Ansible-Rolle kiosk gerendert):
 #
 #   KIOSK_URL      http://127.0.0.1:8080/display.html?room=201
-#   KIOSK_BROWSER  Wunschbrowser aus dem Soll-Zustand (cog|chromium|firefox)
+#   KIOSK_BROWSER  Wunschbrowser aus dem Soll-Zustand (surf|cog|chromium|firefox)
 #
 # Zwei Dinge macht dieses Skript, die eine ExecStart-Zeile nicht koennte:
 #
-#   1. Es wartet, bis raumfrei-display.service tatsaechlich antwortet. cog
-#      laedt eine Seite genau einmal; startet der Browser eine Sekunde zu
+#   1. Es wartet, bis raumfrei-display.service tatsaechlich antwortet. Ein
+#      minimaler Viewer laedt eine Seite genau einmal; startet er eine
+#      Sekunde zu
 #      frueh, steht bis zum naechsten Neustart eine Fehlerseite auf dem
 #      Tuerschild. systemd-Abhaengigkeiten helfen hier nicht, weil der
 #      Python-Server nach dem fork sofort als "gestartet" gilt.
@@ -19,16 +20,20 @@
 #      Backend gewinnt, wenn er installiert ist - sonst die naechste Wahl.
 #      Ein Tuerschild ohne Browser ist schlechter als eines mit dem zweiten.
 #
-# Die gewaehlte Reihenfolge (cog vor chromium vor firefox) ist die Empfehlung
-# fuer Wayland-Kiosks: cog ist ein reiner WebKit-Viewer ohne Chrome-Bedienung,
-# rund 40 MB RSS statt ~250 MB bei chromium.
+# Die Reihenfolge (surf vor cog vor chromium vor firefox) folgt dem Grundsatz
+# fuer Wayland-Kiosks: ein reiner WebKit-Viewer ohne Bedienelemente, rund
+# 40 MB RSS statt ~250 MB bei chromium.
+#
+# surf steht seit dem 31.08.2026 vor cog, weil cog in Ubuntu 24.04 gar nicht
+# paketiert ist; cog bleibt in der Liste, weil es unter Debian die bessere
+# Wahl waere. Siehe group_vars/all.yml.
 
 set -uo pipefail
 
 log() { echo "raumfrei-kiosk: $*"; }
 
 KIOSK_URL="${KIOSK_URL:-http://127.0.0.1:8080/display.html}"
-KIOSK_BROWSER="${KIOSK_BROWSER:-cog}"
+KIOSK_BROWSER="${KIOSK_BROWSER:-surf}"
 
 # --- 1 Auf den lokalen Auslieferer warten -----------------------------------
 for attempt in $(seq 1 30); do
@@ -48,7 +53,7 @@ done
 have() { command -v "$1" >/dev/null 2>&1; }
 
 BROWSER=""
-for candidate in "$KIOSK_BROWSER" cog chromium chromium-browser firefox; do
+for candidate in "$KIOSK_BROWSER" surf cog chromium chromium-browser firefox; do
     [ -n "$candidate" ] || continue
     if have "$candidate"; then BROWSER="$candidate"; break; fi
 done
@@ -63,6 +68,11 @@ fi
 log "Browser ${BROWSER} auf ${KIOSK_URL}"
 
 case "$BROWSER" in
+    surf)
+        # surf kennt keine Bedienelemente und keinen Vollbildschalter - cage
+        # macht den einzigen Client ohnehin bildschirmfuellend.
+        set -- surf "$KIOSK_URL"
+        ;;
     cog)
         set -- cog "$KIOSK_URL"
         ;;
