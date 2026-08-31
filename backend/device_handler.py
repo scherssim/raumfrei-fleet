@@ -39,6 +39,7 @@ import os
 import secrets
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 from botocore.exceptions import ClientError
@@ -56,7 +57,7 @@ NONCE_TTL = 900
 SETTINGS_ID = "settings#global"
 
 DEFAULT_SETTINGS = {
-    "pullRepo": "https://github.com/simonsscherer/raumfrei-fleet",
+    "pullRepo": "https://github.com/scherssim/raumfrei-fleet",
     "pullBranch": "main",
     "displayBaseUrl": "http://localhost:8080/display.html",
     "roomsApiUrl": "",
@@ -121,6 +122,37 @@ def body_of(event):
         return json.loads(raw)
     except (TypeError, ValueError):
         return None
+
+
+def dynamo_safe(value):
+    """Kommazahlen in Decimal wandeln, bevor etwas geschrieben wird.
+
+    DynamoDB kennt kein float. boto3 lehnt es mit "Float types are not
+    supported. Use Decimal types instead." ab, die Ausnahme faellt durch und
+    die Route antwortet mit 500.
+
+    Aufgefallen ist das erst am ersten Check-in eines echten Geraets: der
+    Agent meldet die Dauer seines Ansible-Laufs als Kommazahl
+    ("duration": 4.7). Beide Testsuiten blieben dabei gruen - test_api.sh
+    schickt in seinen Check-ins gar keine Dauer, und die in-memory
+    nachgebildete Tabelle in test_local.py prueft die Typregeln von DynamoDB
+    nicht nach. Der Fehler lag genau in der Luecke zwischen beiden.
+
+    Decimal(str(x)) statt Decimal(x): der Umweg ueber den Text haelt die
+    Zahl bei 4.7 statt 4.70000000000000017763568394002504646778106689453125.
+    """
+    if isinstance(value, float):
+        # NaN und Unendlich haben in DynamoDB keine Entsprechung. Sie hier
+        # zu verwerfen ist besser, als den ganzen Check-in scheitern zu
+        # lassen - der Bericht des Geraets ist auch ohne diesen Wert nuetzlich.
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: dynamo_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [dynamo_safe(v) for v in value]
+    return value
 
 
 def get_settings():
@@ -370,7 +402,7 @@ def checkin(event):
         ),
         ExpressionAttributeValues={
             ":t": now_iso(),
-            ":r": report,
+            ":r": dynamo_safe(report),
             ":c": compliance,
             ":v": reported_version,
             ":a": str(report.get("agentVersion", ""))[:32],
@@ -488,7 +520,9 @@ def update_settings(event):
             continue
         if key not in DEFAULT_SETTINGS:
             return respond(400, {"message": "Unbekannte Einstellung '" + str(key) + "'."})
-        settings[key] = value
+        # Dieselbe Falle wie beim Check-in: ein Kommawert aus fleet.html
+        # (etwa refreshSeconds) wuerde die Route mit 500 beenden.
+        settings[key] = dynamo_safe(value)
 
     item = {"deviceId": SETTINGS_ID, "itemType": "settings"}
     item.update(settings)

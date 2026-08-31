@@ -1,6 +1,6 @@
 [Unit]
 Description=RaumFrei - Erstboot-Enrollment (Secret zu Identitaet)
-Documentation=https://github.com/simonsscherer/raumfrei-fleet
+Documentation=https://github.com/scherssim/raumfrei-fleet
 After=network-online.target time-sync.target
 Wants=network-online.target
 # Laeuft genau einmal: sobald die Identitaet liegt, ist die Bedingung falsch.

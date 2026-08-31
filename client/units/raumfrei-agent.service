@@ -1,6 +1,6 @@
 [Unit]
 Description=RaumFrei - Soll-Zustand holen, herstellen und melden
-Documentation=https://github.com/simonsscherer/raumfrei-fleet
+Documentation=https://github.com/scherssim/raumfrei-fleet
 After=network-online.target raumfrei-enroll.service
 Wants=network-online.target
 ConditionPathExists=/etc/raumfrei/device.json

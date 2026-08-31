@@ -22,6 +22,7 @@ import secrets
 import sys
 import time
 import types
+from copy import deepcopy
 
 os.environ.setdefault("DEVICES_TABLE", "DevicesTest")
 os.environ.setdefault("ENROLL_SECRET", "test-enroll-secret")
@@ -41,6 +42,26 @@ class FakeClientError(Exception):
         self.response = {"Error": {"Code": code, "Message": message}}
 
 
+def kein_float(value, pfad="item"):
+    """Bildet nach, dass DynamoDB keine Kommazahlen annimmt.
+
+    boto3 lehnt sie mit "Float types are not supported. Use Decimal types
+    instead." ab. Diese Attrappe hat das lange NICHT nachgebildet - und genau
+    darin ist der erste Check-in eines echten Geraets untergegangen: hier 44
+    Pruefungen gruen, in AWS eine 500. Eine Attrappe, die grosszuegiger ist
+    als das Original, macht die ganze Testreihe wertlos.
+    """
+    if isinstance(value, float):
+        raise TypeError(
+            "Float types are not supported. Use Decimal types instead. (%s)" % pfad)
+    if isinstance(value, dict):
+        for schluessel, wert in value.items():
+            kein_float(wert, "%s.%s" % (pfad, schluessel))
+    elif isinstance(value, list):
+        for i, wert in enumerate(value):
+            kein_float(wert, "%s[%d]" % (pfad, i))
+
+
 class FakeTable:
     def __init__(self):
         self.items = {}
@@ -49,18 +70,20 @@ class FakeTable:
     def get_item(self, Key):
         self.calls["get_item"] += 1
         item = self.items.get(Key["deviceId"])
-        return {"Item": json.loads(json.dumps(item))} if item else {}
+        return {"Item": deepcopy(item)} if item else {}
 
     def put_item(self, Item, ConditionExpression=None):
         self.calls["put_item"] += 1
+        kein_float(Item, "put_item")
         if ConditionExpression == "attribute_not_exists(deviceId)" and Item["deviceId"] in self.items:
             raise FakeClientError("ConditionalCheckFailedException")
-        self.items[Item["deviceId"]] = json.loads(json.dumps(Item))
+        self.items[Item["deviceId"]] = deepcopy(Item)
         return {}
 
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None,
                     ExpressionAttributeNames=None):
         self.calls["update_item"] += 1
+        kein_float(ExpressionAttributeValues or {}, "update_item")
         item = self.items.setdefault(Key["deviceId"], dict(Key))
         names = ExpressionAttributeNames or {}
         values = ExpressionAttributeValues or {}
@@ -81,7 +104,7 @@ class FakeTable:
                 base = item.get(increment.group(1), values[increment.group(2)])
                 item[field] = base + values[increment.group(3)]
             else:
-                item[field] = json.loads(json.dumps(values[expr]))
+                item[field] = deepcopy(values[expr])
 
         for field in [f.strip() for f in remove_part.split(",") if f.strip()]:
             item.pop(names.get(field, field), None)
@@ -91,7 +114,7 @@ class FakeTable:
         self.calls["scan"] += 1
         wanted = (ExpressionAttributeValues or {}).get(":t")
         items = [
-            json.loads(json.dumps(i))
+            deepcopy(i)
             for i in self.items.values()
             if not FilterExpression or i.get("itemType") == wanted
         ]

@@ -1,6 +1,6 @@
 [Unit]
 Description=RaumFrei - lokaler Auslieferer der Anzeigeseite
-Documentation=https://github.com/simonsscherer/raumfrei-fleet
+Documentation=https://github.com/scherssim/raumfrei-fleet
 After=network.target
 ConditionPathExists=/var/lib/raumfrei/display/display.html
 

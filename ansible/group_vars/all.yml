@@ -14,7 +14,7 @@ deviceId: "unbekannt"
 roomId: null
 displayUrl: null
 roomsApiUrl: ""
-pullRepo: "https://github.com/simonsscherer/raumfrei-fleet"
+pullRepo: "https://github.com/scherssim/raumfrei-fleet"
 pullBranch: "main"
 checkinIntervalSeconds: 2700
 configVersion: "-"

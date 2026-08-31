@@ -114,12 +114,12 @@ check "Raum ist nach der Zuweisung im Soll-Zustand" "IT-LABOR" "$ROOM" "$BODY"
 # --- 4 Check-in -------------------------------------------------------------
 echo
 echo "4 Check-in"
-OUT=$(req POST /checkin "{\"deviceId\":\"$DEVICE_ID\",\"configVersion\":\"$VERSION\",\"agentVersion\":\"smoketest\",\"ansible\":{\"ok\":10,\"changed\":0,\"failed\":0},\"kioskActive\":true}" "Authorization: Bearer $TOKEN")
+OUT=$(req POST /checkin "{\"deviceId\":\"$DEVICE_ID\",\"configVersion\":\"$VERSION\",\"agentVersion\":\"smoketest\",\"ansible\":{\"ok\":10,\"changed\":0,\"failed\":0,\"duration\":4.7},\"kioskActive\":true}" "Authorization: Bearer $TOKEN")
 BODY=$(echo "$OUT" | sed '$d')
 COMPLIANCE=$(echo "$BODY" | python -c "import json,sys; print(json.load(sys.stdin).get('compliance',''))")
 check "Sauberer Lauf meldet COMPLIANT" "COMPLIANT" "$COMPLIANCE" "$BODY"
 
-OUT=$(req POST /checkin "{\"deviceId\":\"$DEVICE_ID\",\"configVersion\":\"$VERSION\",\"ansible\":{\"ok\":8,\"changed\":2,\"failed\":0}}" "Authorization: Bearer $TOKEN")
+OUT=$(req POST /checkin "{\"deviceId\":\"$DEVICE_ID\",\"configVersion\":\"$VERSION\",\"ansible\":{\"ok\":8,\"changed\":2,\"failed\":0,\"duration\":12.4}}" "Authorization: Bearer $TOKEN")
 COMPLIANCE=$(echo "$OUT" | sed '$d' | python -c "import json,sys; print(json.load(sys.stdin).get('compliance',''))")
 check "Korrigierte Drift meldet DRIFT" "DRIFT" "$COMPLIANCE"
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=RaumFrei - Abgleich, getaktet auf die Lektionsenden
-Documentation=https://github.com/simonsscherer/raumfrei-fleet
+Documentation=https://github.com/scherssim/raumfrei-fleet
 
 [Timer]
 # Die Lektionsenden aus RaumFrei (Mo-Fr, Lektion 1-8):
@@ -10,7 +10,7 @@ Documentation=https://github.com/simonsscherer/raumfrei-fleet
 # Der Takt folgt dem Nutzungsrhythmus, nicht einer runden Zahl: ein Display
 # muss genau dann aktuell sein, wenn die naechste Lektion beginnt. Das sind
 # 8 Laeufe an 5 Tagen - rund 173 Laeufe und damit ~346 Requests pro Geraet
-# und Monat. Ein 5-Minuten-Takt waere das 25-fache fuer keinen Nutzen.
+# und Monat. Ein 5-Minuten-Takt waere das 50-fache fuer keinen Nutzen.
 OnCalendar=Mon..Fri 08:20
 OnCalendar=Mon..Fri 09:15
 OnCalendar=Mon..Fri 10:20

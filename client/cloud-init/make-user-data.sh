@@ -4,6 +4,11 @@
 #
 #   ./make-user-data.sh --hostname display-a --kiosk
 #   ./make-user-data.sh --hostname agent-07  --headless --out /tmp/agent-07.yaml
+#   ./make-user-data.sh --hostname display-a --kiosk --lab-zugang geheim123
+#
+# --lab-zugang legt ein Konto "lab" mit Passwort an. Nur fuer die Messreihen,
+# die auf dem Geraet selbst laufen muessen - ohne die Option hat das Image
+# gar kein Konto, und das ist im Betrieb der richtige Zustand.
 #
 # Warum ein Generator und keine gepflegte user-data:
 #
@@ -29,6 +34,7 @@ KIOSK="ja"
 OUT="${HERE}/user-data"
 BACKEND_URL="${BACKEND_URL:-}"
 ENROLL_SECRET="${ENROLL_SECRET:-}"
+LAB_ZUGANG=""
 
 usage() {
     sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
@@ -43,6 +49,7 @@ while [ $# -gt 0 ]; do
         --out)          OUT="$2";          shift 2 ;;
         --backend-url)  BACKEND_URL="$2";  shift 2 ;;
         --secret)       ENROLL_SECRET="$2"; shift 2 ;;
+        --lab-zugang)   LAB_ZUGANG="$2";   shift 2 ;;
         -h|--help)      usage 0 ;;
         *) echo "Unbekannte Option: $1" >&2; usage 1 ;;
     esac
@@ -118,12 +125,47 @@ with open(out, "w", encoding="utf-8", newline="\n") as handle:
     handle.write(text)
 PYTHON
 
+# --- Nur fuer das Lab: Konsolen-Zugang --------------------------------------
+# Das Produktionsimage hat bewusst kein Konto: ein Tuerschild, an dem sich
+# niemand anmelden kann, ist genau die Absicht - Wartung laeuft ueber den
+# Pull, nicht ueber eine Konsole. Fuer die Messreihen braucht es aber eine:
+# measure_zerotouch.sh, inject_drift.sh und netpath_probe.sh laufen AUF dem
+# Geraet. Deshalb diese Option - und deshalb nur mit ausdruecklicher Angabe.
+#
+# Im Bericht gehoert das benannt: die gemessenen VMs tragen einen Zugang,
+# den ein ausgeliefertes Geraet nicht haette.
+if [ -n "$LAB_ZUGANG" ]; then
+    cat >> "$OUT" <<LAB
+
+# ---------------------------------------------------------------------------
+# LAB-ZUGANG - nur zum Messen. Gehoert NICHT auf ein ausgeliefertes Geraet.
+# ---------------------------------------------------------------------------
+ssh_pwauth: true
+chpasswd:
+  expire: false
+users:
+  - default
+  - name: lab
+    gecos: "Lab-Zugang fuer die Messreihen"
+    groups: [adm, sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: "${LAB_ZUGANG}"
+LAB
+fi
+
 chmod 600 "$OUT"
 
 echo "user-data geschrieben: $OUT"
 echo "  Host       : $HOSTNAME_ARG"
 echo "  Backend    : $BACKEND_URL"
 echo "  Kiosk      : $KIOSK"
+if [ -n "$LAB_ZUGANG" ]; then
+    echo "  Lab-Zugang : ja - Benutzer 'lab' mit Passwort (nur fuers Lab!)"
+else
+    echo "  Lab-Zugang : nein"
+fi
 echo "  Groesse    : $(wc -c < "$OUT") Bytes"
 echo
 echo "ACHTUNG: Die Datei enthaelt das ENROLL_SECRET im Klartext."

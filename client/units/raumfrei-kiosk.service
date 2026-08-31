@@ -1,6 +1,6 @@
 [Unit]
 Description=RaumFrei - Kiosk-Anzeige (cage + Browser auf seat0)
-Documentation=https://github.com/simonsscherer/raumfrei-fleet
+Documentation=https://github.com/scherssim/raumfrei-fleet
 After=raumfrei-display.service systemd-user-sessions.service
 Wants=raumfrei-display.service
 ConditionPathExists=/etc/raumfrei/kiosk.env
