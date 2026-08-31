@@ -8,8 +8,11 @@
 #
 #   bash test_api.sh
 #
-# Die verwendete Test-MAC ist fix, damit der Lauf wiederholbar ist. Am Ende
-# wird das Testgeraet ausgemustert, damit es die Flottenmessungen nicht stoert.
+# Jeder Lauf erzeugt eine eigene Test-MAC und mustert das Geraet am Ende aus.
+# Der Preis dafuer: in der Flotte bleibt je Lauf ein RETIRED-Geraet stehen.
+# Das ist gewollt - es belegt den Lebenszyklus bis zum Ende - stoert aber die
+# Zaehlung in fleet.html, wenn der Test oft laeuft. Vor einer Messreihe die
+# Uebersicht kurz durchsehen.
 
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -21,7 +24,29 @@ fi
 # shellcheck disable=SC1091
 set -a; . ./secrets.env; set +a
 
-TEST_MAC="02:00:00:aa:bb:cc"
+# Jeder Lauf bekommt eine eigene MAC. Vorher stand hier eine feste Adresse
+# "damit der Lauf wiederholbar ist" - das Gegenteil war der Fall: die
+# deviceId wird deterministisch aus der MAC abgeleitet, und der letzte
+# Testschritt mustert das Geraet aus. Ein RETIRED-Geraet darf sich nicht neu
+# anmelden, also scheiterte JEDER weitere Lauf schon in Schritt 1 mit 403 -
+# und alle folgenden Pruefungen als Folgefehler gleich mit. Aufgefallen erst
+# beim zweiten Lauf ueberhaupt, am 31.08.
+#
+# 02: als erstes Oktett heisst "lokal verwaltet" (Bit 1 gesetzt, Bit 0 aus) -
+# damit kann die Adresse mit keinem Hersteller kollidieren.
+TEST_MAC="02:00:$(openssl rand -hex 1):$(openssl rand -hex 1):$(openssl rand -hex 1):$(openssl rand -hex 1)"
+
+# Den Interpreter durch AUSFUEHREN pruefen, nicht durch Suchen: unter Windows
+# heisst er "python" (Git Bash), auf Linux "python3" (WSL, VM) - und Windows
+# legt fuer "python3" einen Store-Platzhalter in den PATH, den command -v
+# findet und der mit Exit 49 abbricht. Dieselbe Falle wie in
+# make-user-data.sh; dass sie hier nicht abgefangen war, hat den Testlauf am
+# 31.08. zusaetzlich zerlegt.
+PY=""
+for candidate in python3 python; do
+    if "$candidate" -c "" >/dev/null 2>&1; then PY="$candidate"; break; fi
+done
+[ -n "$PY" ] || { echo "FEHLER: kein lauffaehiges Python gefunden." >&2; exit 1; }
 PASS=0
 FAIL=0
 
@@ -69,8 +94,8 @@ OUT=$(req POST /enroll "{\"mac\":\"$MAC\",\"hostname\":\"smoketest\",\"model\":\
 CODE=$(echo "$OUT" | tail -1); BODY=$(echo "$OUT" | sed '$d')
 check "Enrollment mit gueltigem HMAC" 200 "$CODE" "$BODY"
 
-DEVICE_ID=$(echo "$BODY" | python -c "import json,sys; print(json.load(sys.stdin).get('deviceId',''))")
-TOKEN=$(echo "$BODY" | python -c "import json,sys; print(json.load(sys.stdin).get('token',''))")
+DEVICE_ID=$(echo "$BODY" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('deviceId',''))")
+TOKEN=$(echo "$BODY" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('token',''))")
 echo "       deviceId: $DEVICE_ID"
 
 OUT=$(req POST /enroll "{\"mac\":\"$MAC\",\"hostname\":\"smoketest\",\"ts\":$TS,\"nonce\":\"$NONCE\",\"hmac\":\"$SIG\"}")
@@ -107,8 +132,8 @@ check "Zuweisung mit Admin-Key" 200 "$(echo "$OUT" | tail -1)" "$(echo "$OUT" | 
 
 OUT=$(req GET "/config/$DEVICE_ID" "" "Authorization: Bearer $TOKEN")
 BODY=$(echo "$OUT" | sed '$d')
-ROOM=$(echo "$BODY" | python -c "import json,sys; print(json.load(sys.stdin).get('roomId',''))")
-VERSION=$(echo "$BODY" | python -c "import json,sys; print(json.load(sys.stdin).get('configVersion',''))")
+ROOM=$(echo "$BODY" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('roomId',''))")
+VERSION=$(echo "$BODY" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('configVersion',''))")
 check "Raum ist nach der Zuweisung im Soll-Zustand" "IT-LABOR" "$ROOM" "$BODY"
 
 # --- 4 Check-in -------------------------------------------------------------
@@ -116,11 +141,11 @@ echo
 echo "4 Check-in"
 OUT=$(req POST /checkin "{\"deviceId\":\"$DEVICE_ID\",\"configVersion\":\"$VERSION\",\"agentVersion\":\"smoketest\",\"ansible\":{\"ok\":10,\"changed\":0,\"failed\":0,\"duration\":4.7},\"kioskActive\":true}" "Authorization: Bearer $TOKEN")
 BODY=$(echo "$OUT" | sed '$d')
-COMPLIANCE=$(echo "$BODY" | python -c "import json,sys; print(json.load(sys.stdin).get('compliance',''))")
+COMPLIANCE=$(echo "$BODY" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('compliance',''))")
 check "Sauberer Lauf meldet COMPLIANT" "COMPLIANT" "$COMPLIANCE" "$BODY"
 
 OUT=$(req POST /checkin "{\"deviceId\":\"$DEVICE_ID\",\"configVersion\":\"$VERSION\",\"ansible\":{\"ok\":8,\"changed\":2,\"failed\":0,\"duration\":12.4}}" "Authorization: Bearer $TOKEN")
-COMPLIANCE=$(echo "$OUT" | sed '$d' | python -c "import json,sys; print(json.load(sys.stdin).get('compliance',''))")
+COMPLIANCE=$(echo "$OUT" | sed '$d' | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('compliance',''))")
 check "Korrigierte Drift meldet DRIFT" "DRIFT" "$COMPLIANCE"
 
 # --- 5 Flotte und Widerruf --------------------------------------------------
@@ -128,7 +153,7 @@ echo
 echo "5 Flotte und Lifecycle"
 OUT=$(req GET /devices "" "X-Admin-Key: $ADMIN_KEY")
 check "Flottenuebersicht" 200 "$(echo "$OUT" | tail -1)"
-echo "$OUT" | sed '$d' | python -c "import json,sys; d=json.load(sys.stdin); print('       Geraete in der Flotte:', d.get('count'))"
+echo "$OUT" | sed '$d' | "$PY" -c "import json,sys; d=json.load(sys.stdin); print('       Geraete in der Flotte:', d.get('count'))"
 
 OUT=$(req POST "/devices/$DEVICE_ID/revoke" '{}' "X-Admin-Key: $ADMIN_KEY")
 check "Widerruf" 200 "$(echo "$OUT" | tail -1)"
