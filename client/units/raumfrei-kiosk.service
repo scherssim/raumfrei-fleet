@@ -5,6 +5,21 @@ After=raumfrei-display.service systemd-user-sessions.service
 Wants=raumfrei-display.service
 ConditionPathExists=/etc/raumfrei/kiosk.env
 
+# Ohne diese zwei Zeilen startet der Kiosk NIE - auf keinem Geraet, auch
+# nicht nach einem frischen Boot. /dev/tty1 gehoert dem agetty aus
+# getty@tty1.service, und StandardInput=tty-fail gibt genau dann auf:
+#
+#   Failed to set up standard input: Operation not permitted
+#   Main process exited, code=exited, status=208/STDIN
+#
+# Restart=always macht daraus eine Endlosschleife, die im Journal wie ein
+# Browserproblem aussieht. Conflicts= laesst systemd den getty anhalten,
+# bevor der Kiosk die Konsole uebernimmt; After= sorgt fuer die Reihenfolge.
+# Am 31.08.2026 auf display-a gefunden - vorher verdeckt, weil die Rolle
+# schon am Paket cog abbrach und die Unit gar nie so weit kam.
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
 [Service]
 # Erste Heilungsschicht: stirbt der Browser, ist er in Sekunden zurueck.
 # Konfigurationsdrift heilt das NICHT - dafuer braucht es den naechsten
