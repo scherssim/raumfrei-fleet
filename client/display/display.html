@@ -19,6 +19,19 @@
   Ein ?room=201 in der URL hat Vorrang - so laesst sich die Seite am
   Arbeitsplatz pruefen, ohne die Konfiguration anzufassen.
 
+  Aufbau der Seite, von oben nach unten:
+      Kopf     Raum, Stockwerk, Uhr
+      Jetzt    Ampel fuer den Moment - die Frage vor der Tuer
+      Woche    Mo-Fr x Lektion 1-8 fuer DIESEN Raum
+      Fuss     Frische des Stands, Legende, Geraetekennung
+
+  Warum die ganze Woche und nicht nur der heutige Tag: das Buchungsmodell des
+  Backends ist ohnehin wochenweise (Zellschluessel "<Tag>#<Lektion>", ohne
+  Datum). Wer vor einem belegten Zimmer steht, will als Naechstes wissen,
+  wann es frei ist - bei einer Tagesliste steht das fruehestens morgen auf
+  dem Schirm. Dieselbe Matrix benutzt die Verwaltungsoberflaeche
+  RaumFrei.html; hier ist sie nur lesend, ein Tuerschild bucht nichts.
+
   Das Good-Enough-Kriterium "Backend offline -> Displays zeigen weiter den
   letzten Stand" ist der Grund fuer den localStorage-Cache: faellt /rooms aus,
   bleibt der zuletzt geholte Plan stehen und die Kopfzeile sagt ehrlich, wie
@@ -32,6 +45,7 @@
   :root {
     --bg:     #0e1116;
     --panel:  #171c24;
+    --panel2: #1e2531;
     --line:   #262e3a;
     --text:   #eef2f7;
     --muted:  #8d9aad;
@@ -39,7 +53,20 @@
     --busy:   #e5484d;
     --soon:   #e8a33d;
     --stale:  #e8a33d;
+    --freeBg: rgba(47,191,113,.12);
+    --busyBg: rgba(229,72,77,.16);
+    --busyTx: #f6a6a8;
+
+    /* Alle Groessen beziehen sich auf die STAGE, nicht auf das Viewport: bei
+       90 und 270 Grad sind Hoehe und Breite vertauscht (siehe #stage). Ohne
+       diesen Tausch waere die Schrift auf einem hochkant montierten Schirm um
+       das Seitenverhaeltnis zu gross - und die Wochenmatrix, die anders als
+       eine Tagesliste keinen Platz uebrig hat, liefe unten heraus. */
+    --h: 1vh;
+    --w: 1vw;
   }
+  body.rot-90, body.rot-270 { --h: 1vw; --w: 1vh; }
+
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
@@ -64,58 +91,124 @@
   body.rot-90, body.rot-270 { display: flex; align-items: center; justify-content: center; }
 
   header {
-    display: flex; align-items: baseline; gap: 1rem;
-    padding: 2.2vh 3vw 1.4vh; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: calc(1 * var(--w));
+    padding: calc(1.8 * var(--h)) calc(3 * var(--w)) calc(1.2 * var(--h));
+    border-bottom: 1px solid var(--line); flex: none;
   }
-  header .room { font-size: 6vh; font-weight: 700; line-height: 1; }
-  header .floor { font-size: 2.2vh; color: var(--muted); }
-  header .clock { margin-left: auto; font-size: 4.5vh; font-weight: 300; font-variant-numeric: tabular-nums; }
+  header .room { font-size: calc(5.4 * var(--h)); font-weight: 700; line-height: 1; }
+  header .floor { font-size: calc(2 * var(--h)); color: var(--muted); }
+  header .clock {
+    margin-left: auto; font-size: calc(4.2 * var(--h)); font-weight: 300;
+    font-variant-numeric: tabular-nums;
+  }
 
   #now {
-    padding: 3vh 3vw; display: flex; align-items: center; gap: 2.5vw;
-    border-bottom: 1px solid var(--line);
+    padding: calc(2 * var(--h)) calc(3 * var(--w));
+    display: flex; align-items: center; gap: calc(2.5 * var(--w));
+    border-bottom: 1px solid var(--line); flex: none;
   }
   #now .light {
-    width: 12vh; height: 12vh; border-radius: 50%; flex: none;
-    background: var(--muted); box-shadow: 0 0 6vh -1vh currentColor;
+    width: calc(9 * var(--h)); height: calc(9 * var(--h)); border-radius: 50%; flex: none;
+    background: var(--muted); box-shadow: 0 0 calc(5 * var(--h)) calc(-1 * var(--h)) currentColor;
   }
   #now.free .light { background: var(--free); color: var(--free); }
   #now.busy .light { background: var(--busy); color: var(--busy); }
-  #now .headline { font-size: 7vh; font-weight: 700; line-height: 1.05; }
+  #now .headline { font-size: calc(5.6 * var(--h)); font-weight: 700; line-height: 1.05; }
   #now.free .headline { color: var(--free); }
   #now.busy .headline { color: var(--busy); }
-  #now .detail { font-size: 2.6vh; color: var(--muted); margin-top: .6vh; }
+  #now .detail { font-size: calc(2.4 * var(--h)); color: var(--muted); margin-top: calc(.6 * var(--h)); }
 
-  #today { flex: 1; overflow: hidden; padding: 1.5vh 3vw; }
-  #today h2 {
-    font-size: 2vh; font-weight: 600; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .08em; margin: 0 0 1vh;
+  /* ---------------------------------------------------------------- Woche */
+
+  #week {
+    flex: 1; min-height: 0; display: flex; flex-direction: column;
+    padding: calc(1.4 * var(--h)) calc(3 * var(--w));
   }
-  .lesson {
-    display: flex; align-items: center; gap: 1.5vw;
-    padding: .9vh 0; border-bottom: 1px solid var(--line); font-size: 2.6vh;
+  #week h2 {
+    font-size: calc(1.9 * var(--h)); font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .08em;
+    margin: 0 0 calc(1.1 * var(--h)); flex: none;
   }
-  .lesson:last-child { border-bottom: none; }
-  .lesson .time { width: 11vw; min-width: 8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .lesson .who { flex: 1; }
-  .lesson .tag { font-weight: 600; }
-  .lesson.free .tag { color: var(--free); }
-  .lesson.busy .tag { color: var(--busy); }
-  .lesson.past { opacity: .35; }
-  .lesson.current { background: var(--panel); font-weight: 600; border-radius: 6px; padding-left: 1vw; }
+
+  /* Feste Zeilenzahl statt Scrollen: acht Lektionen plus Kopfzeile teilen
+     sich den Rest der Hoehe. So passt die Matrix auf jeden Schirm, ohne dass
+     die Seite eine Bildlaufleiste braucht - die koennte auf einem Tuerschild
+     niemand bedienen. */
+  #grid {
+    flex: 1; min-height: 0; display: grid;
+    grid-template-columns: auto repeat(5, 1fr);
+    grid-template-rows: auto repeat(8, 1fr);
+    gap: calc(.5 * var(--h)) calc(.5 * var(--w));
+  }
+
+  #grid .gh {
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+    padding-bottom: calc(.6 * var(--h));
+    font-size: calc(2.2 * var(--h)); font-weight: 700; color: var(--muted);
+  }
+  #grid .gh .date { font-size: calc(1.5 * var(--h)); font-weight: 400; }
+  #grid .gh.today { color: var(--text); }
+  #grid .gh.today .date { color: var(--soon); }
+
+  #grid .rh {
+    display: flex; flex-direction: column; align-items: flex-end; justify-content: center;
+    padding-right: calc(.9 * var(--w));
+    font-size: calc(2 * var(--h)); font-weight: 600; color: var(--muted);
+  }
+  #grid .rh .time {
+    font-size: calc(1.4 * var(--h)); font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+  #grid .rh.current { color: var(--text); }
+
+  #grid .c {
+    display: flex; align-items: center; justify-content: center;
+    border-radius: calc(.7 * var(--h)); overflow: hidden;
+    padding: 0 calc(.5 * var(--w));
+  }
+  #grid .c.free { background: var(--freeBg); }
+  #grid .c.busy { background: var(--busyBg); }
+  #grid .c .who {
+    font-size: calc(1.8 * var(--h)); color: var(--busyTx);
+    max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Die heutige Spalte bekommt eine Kante, die laufende Lektion einen
+     kraeftigen Rahmen - beides ohne Farbwechsel, damit frei/belegt die
+     einzige Farbaussage der Matrix bleibt. */
+  #grid .c.today { box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
+  #grid .c.past  { opacity: .4; }
+  #grid .c.current {
+    box-shadow: inset 0 0 0 calc(.4 * var(--h)) var(--soon);
+    opacity: 1;
+  }
+
+  #grid .empty {
+    grid-column: 1 / -1; grid-row: 1 / -1;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: calc(2.4 * var(--h)); text-align: center;
+  }
 
   footer {
-    display: flex; gap: 1.5vw; align-items: center;
-    padding: 1.2vh 3vw; border-top: 1px solid var(--line);
-    font-size: 1.8vh; color: var(--muted);
+    display: flex; gap: calc(1.5 * var(--w)); align-items: center;
+    padding: calc(1.1 * var(--h)) calc(3 * var(--w));
+    border-top: 1px solid var(--line); flex: none;
+    font-size: calc(1.7 * var(--h)); color: var(--muted);
   }
   footer .grow { flex: 1; }
   footer .stale { color: var(--stale); font-weight: 600; }
   footer .offline-dot {
-    width: .9vh; height: .9vh; border-radius: 50%;
-    background: var(--free); display: inline-block; margin-right: .5vw;
+    width: calc(.9 * var(--h)); height: calc(.9 * var(--h)); border-radius: 50%;
+    background: var(--free); display: inline-block; margin-right: calc(.5 * var(--w));
   }
   footer.offline .offline-dot { background: var(--stale); }
+  footer .legend { display: flex; gap: calc(1.2 * var(--w)); align-items: center; }
+  footer .legend span { display: flex; align-items: center; gap: calc(.5 * var(--w)); }
+  footer .swatch {
+    width: calc(1.6 * var(--h)); height: calc(1.6 * var(--h));
+    border-radius: calc(.4 * var(--h)); display: inline-block;
+  }
+  footer .swatch.free { background: var(--freeBg); border: 1px solid var(--free); }
+  footer .swatch.busy { background: var(--busyBg); border: 1px solid var(--busy); }
 </style>
 </head>
 <body>
@@ -136,13 +229,17 @@
     </div>
   </div>
 
-  <div id="today">
-    <h2 id="todayTitle">Heute</h2>
-    <div id="lessons"></div>
+  <div id="week">
+    <h2 id="weekTitle">Woche</h2>
+    <div id="grid"></div>
   </div>
 
   <footer id="foot">
     <span><span class="offline-dot"></span><span id="freshness">noch kein Stand</span></span>
+    <span class="legend">
+      <span><i class="swatch free"></i>frei</span>
+      <span><i class="swatch busy"></i>belegt</span>
+    </span>
     <span class="grow"></span>
     <span id="deviceInfo"></span>
   </footer>
@@ -153,6 +250,7 @@
 
 /* Stammdaten identisch zu RaumFrei.html - Zellschluessel "<Tag>#<Lektion>". */
 var DAY_CODES = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+var WEEK_DAYS = ["Mo", "Di", "Mi", "Do", "Fr"];
 var LESSONS = [
   { n: 1, from: "07:30", to: "08:20" },
   { n: 2, from: "08:25", to: "09:15" },
@@ -173,6 +271,7 @@ var online = false;
 function byId(id) { return document.getElementById(id); }
 function pad(n) { return (n < 10 ? "0" : "") + n; }
 function hhmm(date) { return pad(date.getHours()) + ":" + pad(date.getMinutes()); }
+function ddmm(date) { return pad(date.getDate()) + "." + pad(date.getMonth() + 1) + "."; }
 function minutesOf(text) {
   var parts = text.split(":");
   return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
@@ -278,6 +377,69 @@ function lessonState(now) {
   return { index: -1, running: false };
 }
 
+/* Montag der angezeigten Woche. Am Wochenende ist die laufende Woche vorbei -
+   dann steht der kommende Montag oben, sonst zeigte das Schild am Sonntag
+   fuenf ausgegraute Tage. Die Buchungen selbst sind datumslos und gelten
+   wochenweise wiederkehrend; das Datum in der Kopfzeile ist Beschriftung. */
+function weekStart(now) {
+  var day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var dow = day.getDay();
+  var delta = dow === 0 ? 1 : (dow === 6 ? 2 : 1 - dow);
+  day.setDate(day.getDate() + delta);
+  return day;
+}
+
+function renderWeek(bookings, now, state) {
+  var dow = now.getDay();
+  var ahead = (dow === 0 || dow === 6);     /* Wochenende: kommende Woche */
+  var todayIndex = ahead ? -1 : dow - 1;    /* 0 = Mo ... 4 = Fr */
+  var monday = weekStart(now);
+
+  var dates = [];
+  for (var i = 0; i < 5; i++) {
+    dates.push(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i));
+  }
+  byId("weekTitle").textContent = "Woche " + ddmm(dates[0]) + " – " + ddmm(dates[4])
+    + (ahead ? " · naechste Woche" : "");
+
+  var cells = ['<div class="gh"></div>'];
+  for (var d = 0; d < 5; d++) {
+    cells.push('<div class="gh' + (d === todayIndex ? " today" : "") + '">'
+      + WEEK_DAYS[d] + '<span class="date">' + ddmm(dates[d]) + "</span></div>");
+  }
+
+  for (var l = 0; l < LESSONS.length; l++) {
+    var lesson = LESSONS[l];
+    var rowCurrent = (todayIndex >= 0 && state.running && state.index === l);
+    cells.push('<div class="rh' + (rowCurrent ? " current" : "") + '">' + lesson.n
+      + '<span class="time">' + lesson.from + "</span></div>");
+
+    for (var c = 0; c < 5; c++) {
+      var who = bookings[WEEK_DAYS[c] + "#" + lesson.n];
+      var isToday = (c === todayIndex);
+      var classes = ["c", who ? "busy" : "free"];
+      if (isToday) classes.push("today");
+      /* Vergangen ist alles vor heute und - am heutigen Tag - jede Lektion
+         vor der laufenden. state.index === -1 heisst: der Schultag ist
+         durch, dann ist die ganze heutige Spalte Vergangenheit. */
+      if (todayIndex >= 0 && (c < todayIndex
+          || (isToday && (state.index === -1 || l < state.index)))) {
+        classes.push("past");
+      }
+      if (isToday && state.running && state.index === l) classes.push("current");
+      cells.push('<div class="' + classes.join(" ") + '">'
+        + (who ? '<span class="who">' + esc(who) + "</span>" : "") + "</div>");
+    }
+  }
+
+  byId("grid").innerHTML = cells.join("");
+}
+
+function showEmptyWeek(message) {
+  byId("weekTitle").textContent = "Woche";
+  byId("grid").innerHTML = '<div class="empty">' + esc(message) + "</div>";
+}
+
 function render() {
   var now = new Date();
   byId("clock").textContent = hhmm(now);
@@ -295,7 +457,6 @@ function render() {
   }
 
   var box = byId("now");
-  var lessons = byId("lessons");
 
   if (!config.roomId) {
     byId("roomName").textContent = "Kein Raum";
@@ -303,7 +464,7 @@ function render() {
     box.className = "";
     byId("nowHeadline").textContent = "Nicht zugewiesen";
     byId("nowDetail").textContent = "Diesem Geraet ist im Backend noch kein Raum zugewiesen.";
-    lessons.innerHTML = "";
+    showEmptyWeek("Ohne Raumzuweisung gibt es keinen Wochenplan.");
     return;
   }
 
@@ -317,7 +478,9 @@ function render() {
     byId("nowDetail").textContent = fetchedAt
       ? "Raum " + config.roomId + " kommt im zuletzt geholten Plan nicht vor."
       : "Raumplan noch nicht geholt.";
-    lessons.innerHTML = "";
+    showEmptyWeek(fetchedAt
+      ? "Raum " + config.roomId + " fehlt im zuletzt geholten Plan."
+      : "Raumplan wird geholt.");
     return;
   }
 
@@ -353,25 +516,7 @@ function render() {
     }
   }
 
-  byId("todayTitle").textContent = "Heute · " + dayCode + ", " +
-    now.toLocaleDateString("de-CH", { day: "2-digit", month: "2-digit", year: "numeric" });
-
-  if (dayCode === "Sa" || dayCode === "So") {
-    lessons.innerHTML = '<div class="lesson"><span class="who">Keine Lektionen am Wochenende.</span></div>';
-    return;
-  }
-
-  lessons.innerHTML = LESSONS.map(function (lesson, index) {
-    var who = bookings[dayCode + "#" + lesson.n];
-    var classes = ["lesson", who ? "busy" : "free"];
-    if (state.index === index && state.running) classes.push("current");
-    else if (state.index === -1 || index < state.index) classes.push("past");
-    return '<div class="' + classes.join(" ") + '">'
-      + '<span class="time">' + lesson.from + "–" + lesson.to + "</span>"
-      + '<span class="who">' + (who ? esc(who) : "") + "</span>"
-      + '<span class="tag">' + (who ? "belegt" : "frei") + "</span>"
-      + "</div>";
-  }).join("");
+  renderWeek(bookings, now, state);
 }
 
 /* ------------------------------------------------------------------- Start */
