@@ -20,17 +20,18 @@
   Arbeitsplatz pruefen, ohne die Konfiguration anzufassen.
 
   Aufbau der Seite, von oben nach unten:
-      Kopf     Raum, Stockwerk, Uhr
+      Kopf     Raum links, Datum und Uhr rechts
       Jetzt    Ampel fuer den Moment - die Frage vor der Tuer
-      Woche    Mo-Fr x Lektion 1-8 fuer DIESEN Raum
+      Plan     heute ganz links, rechts die naechsten vier Schultage
       Fuss     Frische des Stands, Legende, Geraetekennung
 
-  Warum die ganze Woche und nicht nur der heutige Tag: das Buchungsmodell des
-  Backends ist ohnehin wochenweise (Zellschluessel "<Tag>#<Lektion>", ohne
-  Datum). Wer vor einem belegten Zimmer steht, will als Naechstes wissen,
-  wann es frei ist - bei einer Tagesliste steht das fruehestens morgen auf
-  dem Schirm. Dieselbe Matrix benutzt die Verwaltungsoberflaeche
-  RaumFrei.html; hier ist sie nur lesend, ein Tuerschild bucht nichts.
+  Warum ein rollendes Fenster statt Mo-Fr: das Buchungsmodell des Backends ist
+  wochenweise (Zellschluessel "<Tag>#<Lektion>", ohne Datum), aber wer vor der
+  Tuer steht, liest von "jetzt" nach rechts. Steht heute immer in der ersten
+  Spalte, muss niemand erst suchen, wo in der Woche er sich befindet - und
+  nach Freitag folgt der kommende Montag statt nichts. Der Wochenumbruch
+  Fr|Mo ist als senkrechte Linie markiert, sonst laesen sich fuenf Spalten
+  wie eine durchgehende Woche.
 
   Das Good-Enough-Kriterium "Backend offline -> Displays zeigen weiter den
   letzten Stand" ist der Grund fuer den localStorage-Cache: faellt /rooms aus,
@@ -44,8 +45,6 @@
 <style>
   :root {
     --bg:     #0e1116;
-    --panel:  #171c24;
-    --panel2: #1e2531;
     --line:   #262e3a;
     --text:   #eef2f7;
     --muted:  #8d9aad;
@@ -56,12 +55,17 @@
     --freeBg: rgba(47,191,113,.12);
     --busyBg: rgba(229,72,77,.16);
     --busyTx: #f6a6a8;
+    --sep:    rgba(141,154,173,.55);
 
     /* Alle Groessen beziehen sich auf die STAGE, nicht auf das Viewport: bei
        90 und 270 Grad sind Hoehe und Breite vertauscht (siehe #stage). Ohne
        diesen Tausch waere die Schrift auf einem hochkant montierten Schirm um
-       das Seitenverhaeltnis zu gross - und die Wochenmatrix, die anders als
-       eine Tagesliste keinen Platz uebrig hat, liefe unten heraus. */
+       das Seitenverhaeltnis zu gross - und die Matrix, die anders als eine
+       Tagesliste keinen Platz uebrig hat, liefe unten heraus.
+
+       Abgeleitete Groessen absichtlich NICHT hier: ein --sepw, das --w
+       benutzt, wuerde schon auf :root aufgeloest und der Tausch unten kaeme
+       nie an. Wo ein Mass gebraucht wird, steht das calc() an Ort und Stelle. */
     --h: 1vh;
     --w: 1vw;
   }
@@ -92,13 +96,17 @@
 
   header {
     display: flex; align-items: baseline; gap: calc(1 * var(--w));
-    padding: calc(1.8 * var(--h)) calc(3 * var(--w)) calc(1.2 * var(--h));
+    padding: calc(2 * var(--h)) calc(3 * var(--w));
     border-bottom: 1px solid var(--line); flex: none;
   }
   header .room { font-size: calc(5.4 * var(--h)); font-weight: 700; line-height: 1; }
-  header .floor { font-size: calc(2 * var(--h)); color: var(--muted); }
+  header .stamp {
+    margin-left: auto; display: flex; align-items: baseline;
+    gap: calc(1.4 * var(--w));
+  }
+  header .date { font-size: calc(2.6 * var(--h)); color: var(--muted); }
   header .clock {
-    margin-left: auto; font-size: calc(4.2 * var(--h)); font-weight: 300;
+    font-size: calc(4.2 * var(--h)); font-weight: 300;
     font-variant-numeric: tabular-nums;
   }
 
@@ -118,22 +126,18 @@
   #now.busy .headline { color: var(--busy); }
   #now .detail { font-size: calc(2.4 * var(--h)); color: var(--muted); margin-top: calc(.6 * var(--h)); }
 
-  /* ---------------------------------------------------------------- Woche */
+  /* ----------------------------------------------------------------- Plan */
 
-  #week {
+  #plan {
     flex: 1; min-height: 0; display: flex; flex-direction: column;
-    padding: calc(1.4 * var(--h)) calc(3 * var(--w));
-  }
-  #week h2 {
-    font-size: calc(1.9 * var(--h)); font-weight: 600; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .08em;
-    margin: 0 0 calc(1.1 * var(--h)); flex: none;
+    padding: calc(1.6 * var(--h)) calc(3 * var(--w));
   }
 
   /* Feste Zeilenzahl statt Scrollen: acht Lektionen plus Kopfzeile teilen
-     sich den Rest der Hoehe. So passt die Matrix auf jeden Schirm, ohne dass
-     die Seite eine Bildlaufleiste braucht - die koennte auf einem Tuerschild
-     niemand bedienen. */
+     sich die Hoehe. So passt der Plan auf jeden Schirm, ohne dass die Seite
+     eine Bildlaufleiste braucht - die koennte auf einem Tuerschild niemand
+     bedienen. Die Spalten setzt renderPlan() per Inline-Style neu, weil beim
+     Wochenumbruch eine schmale Trennspalte dazwischenkommt. */
   #grid {
     flex: 1; min-height: 0; display: grid;
     grid-template-columns: auto repeat(5, 1fr);
@@ -161,6 +165,17 @@
   }
   #grid .rh.current { color: var(--text); }
 
+  /* Trennung Freitag|Montag. Der negative Rand ueberbrueckt die Zeilenluecke
+     (halbe gap oben, halbe unten), damit daraus eine durchgehende Linie wird
+     und nicht neun Striche - aendert sich die row-gap oben, muss er mit. */
+  #grid .sep {
+    width: calc(.22 * var(--h)); justify-self: center;
+    background: var(--sep);
+    margin: calc(-.25 * var(--h)) 0;
+  }
+  #grid .sep.sep-first { margin-top: 0; }
+  #grid .sep.sep-last  { margin-bottom: 0; }
+
   #grid .c {
     display: flex; align-items: center; justify-content: center;
     border-radius: calc(.7 * var(--h)); overflow: hidden;
@@ -174,7 +189,7 @@
   }
   /* Die heutige Spalte bekommt eine Kante, die laufende Lektion einen
      kraeftigen Rahmen - beides ohne Farbwechsel, damit frei/belegt die
-     einzige Farbaussage der Matrix bleibt. */
+     einzige Farbaussage des Plans bleibt. */
   #grid .c.today { box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
   #grid .c.past  { opacity: .4; }
   #grid .c.current {
@@ -214,11 +229,11 @@
 <body>
 <div id="stage">
   <header>
-    <div>
-      <div class="room" id="roomName">&mdash;</div>
-      <div class="floor" id="roomFloor"></div>
+    <div class="room" id="roomName">&mdash;</div>
+    <div class="stamp">
+      <span class="date" id="dateStamp">--.--.----</span>
+      <span class="clock" id="clock">--:--</span>
     </div>
-    <div class="clock" id="clock">--:--</div>
   </header>
 
   <div id="now">
@@ -229,8 +244,7 @@
     </div>
   </div>
 
-  <div id="week">
-    <h2 id="weekTitle">Woche</h2>
+  <div id="plan">
     <div id="grid"></div>
   </div>
 
@@ -250,7 +264,6 @@
 
 /* Stammdaten identisch zu RaumFrei.html - Zellschluessel "<Tag>#<Lektion>". */
 var DAY_CODES = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
-var WEEK_DAYS = ["Mo", "Di", "Mi", "Do", "Fr"];
 var LESSONS = [
   { n: 1, from: "07:30", to: "08:20" },
   { n: 2, from: "08:25", to: "09:15" },
@@ -272,6 +285,9 @@ function byId(id) { return document.getElementById(id); }
 function pad(n) { return (n < 10 ? "0" : "") + n; }
 function hhmm(date) { return pad(date.getHours()) + ":" + pad(date.getMinutes()); }
 function ddmm(date) { return pad(date.getDate()) + "." + pad(date.getMonth() + 1) + "."; }
+function fullDate(date) {
+  return DAY_CODES[date.getDay()] + ", " + ddmm(date) + date.getFullYear();
+}
 function minutesOf(text) {
   var parts = text.split(":");
   return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
@@ -377,72 +393,95 @@ function lessonState(now) {
   return { index: -1, running: false };
 }
 
-/* Montag der angezeigten Woche. Am Wochenende ist die laufende Woche vorbei -
-   dann steht der kommende Montag oben, sonst zeigte das Schild am Sonntag
-   fuenf ausgegraute Tage. Die Buchungen selbst sind datumslos und gelten
-   wochenweise wiederkehrend; das Datum in der Kopfzeile ist Beschriftung. */
-function weekStart(now) {
+/* Die fuenf angezeigten Spalten: heute ganz links, dann die naechsten vier
+   Schultage. Der heutige Tag bleibt bis Mitternacht stehen, auch wenn die
+   8. Lektion durch ist - dann ist die Spalte vollstaendig ausgegraut. Das
+   ist bewusst so: die erste Spalte heisst immer "heute".
+   Am Wochenende gibt es keinen heutigen Schultag; dann beginnt das Fenster
+   beim kommenden Montag und keine Spalte ist als heute markiert. */
+function dayWindow(now) {
   var day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   var dow = day.getDay();
-  var delta = dow === 0 ? 1 : (dow === 6 ? 2 : 1 - dow);
-  day.setDate(day.getDate() + delta);
-  return day;
+  var schoolDay = (dow >= 1 && dow <= 5);
+  if (!schoolDay) day.setDate(day.getDate() + (dow === 6 ? 2 : 1));
+
+  var cols = [];
+  for (var i = 0; i < 5; i++) {
+    cols.push({ code: DAY_CODES[day.getDay()], date: new Date(day.getTime()) });
+    do { day.setDate(day.getDate() + 1); } while (day.getDay() === 0 || day.getDay() === 6);
+  }
+
+  /* Wo das Fenster die Woche wechselt - dort kommt die Trennlinie hin.
+     Faengt es am Montag an, liegt der Umbruch ausserhalb und es gibt keine. */
+  var breakAt = -1;
+  for (var k = 1; k < 5; k++) { if (cols[k].code === "Mo") breakAt = k; }
+
+  return { cols: cols, breakAt: breakAt, todayIndex: schoolDay ? 0 : -1 };
 }
 
-function renderWeek(bookings, now, state) {
-  var dow = now.getDay();
-  var ahead = (dow === 0 || dow === 6);     /* Wochenende: kommende Woche */
-  var todayIndex = ahead ? -1 : dow - 1;    /* 0 = Mo ... 4 = Fr */
-  var monday = weekStart(now);
+function renderPlan(bookings, now, state) {
+  var grid = byId("grid");
+  var win = dayWindow(now);
+  var hasToday = (win.todayIndex === 0);
 
-  var dates = [];
-  for (var i = 0; i < 5; i++) {
-    dates.push(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i));
+  /* Die Trennung steckt als eigene Spalte im Raster und nicht als Rand an
+     einer Zelle: nur so laeuft die Linie durch alle neun Zeilen, und die
+     fuenf Tagesspalten bleiben untereinander gleich breit. */
+  var template = "auto";
+  for (var t = 0; t < 5; t++) {
+    if (t === win.breakAt) template += " calc(1.2 * var(--w))";
+    template += " 1fr";
   }
-  byId("weekTitle").textContent = "Woche " + ddmm(dates[0]) + " – " + ddmm(dates[4])
-    + (ahead ? " · naechste Woche" : "");
+  grid.style.gridTemplateColumns = template;
 
-  var cells = ['<div class="gh"></div>'];
-  for (var d = 0; d < 5; d++) {
-    cells.push('<div class="gh' + (d === todayIndex ? " today" : "") + '">'
-      + WEEK_DAYS[d] + '<span class="date">' + ddmm(dates[d]) + "</span></div>");
+  function sep(row) {
+    return '<div class="sep' + (row === 0 ? " sep-first" : "")
+      + (row === 8 ? " sep-last" : "") + '"></div>';
+  }
+
+  var out = ['<div class="gh"></div>'];
+  for (var c = 0; c < 5; c++) {
+    if (c === win.breakAt) out.push(sep(0));
+    out.push('<div class="gh' + (hasToday && c === 0 ? " today" : "") + '">'
+      + win.cols[c].code + '<span class="date">' + ddmm(win.cols[c].date) + "</span></div>");
   }
 
   for (var l = 0; l < LESSONS.length; l++) {
     var lesson = LESSONS[l];
-    var rowCurrent = (todayIndex >= 0 && state.running && state.index === l);
-    cells.push('<div class="rh' + (rowCurrent ? " current" : "") + '">' + lesson.n
+    var running = (hasToday && state.running && state.index === l);
+    out.push('<div class="rh' + (running ? " current" : "") + '">' + lesson.n
       + '<span class="time">' + lesson.from + "</span></div>");
 
-    for (var c = 0; c < 5; c++) {
-      var who = bookings[WEEK_DAYS[c] + "#" + lesson.n];
-      var isToday = (c === todayIndex);
+    for (var d = 0; d < 5; d++) {
+      if (d === win.breakAt) out.push(sep(l + 1));
+      var who = bookings[win.cols[d].code + "#" + lesson.n];
       var classes = ["c", who ? "busy" : "free"];
-      if (isToday) classes.push("today");
-      /* Vergangen ist alles vor heute und - am heutigen Tag - jede Lektion
-         vor der laufenden. state.index === -1 heisst: der Schultag ist
-         durch, dann ist die ganze heutige Spalte Vergangenheit. */
-      if (todayIndex >= 0 && (c < todayIndex
-          || (isToday && (state.index === -1 || l < state.index)))) {
-        classes.push("past");
+      if (hasToday && d === 0) {
+        classes.push("today");
+        /* Vergangen ist nur, was heute schon gelaufen ist - alles rechts
+           davon liegt in der Zukunft. state.index === -1 heisst: der
+           Schultag ist durch, dann ist die ganze Spalte Vergangenheit. */
+        if (state.index === -1 || l < state.index) classes.push("past");
+        if (state.running && state.index === l) classes.push("current");
       }
-      if (isToday && state.running && state.index === l) classes.push("current");
-      cells.push('<div class="' + classes.join(" ") + '">'
+      out.push('<div class="' + classes.join(" ") + '">'
         + (who ? '<span class="who">' + esc(who) + "</span>" : "") + "</div>");
     }
   }
 
-  byId("grid").innerHTML = cells.join("");
+  grid.innerHTML = out.join("");
 }
 
-function showEmptyWeek(message) {
-  byId("weekTitle").textContent = "Woche";
-  byId("grid").innerHTML = '<div class="empty">' + esc(message) + "</div>";
+function showEmptyPlan(message) {
+  var grid = byId("grid");
+  grid.style.gridTemplateColumns = "";
+  grid.innerHTML = '<div class="empty">' + esc(message) + "</div>";
 }
 
 function render() {
   var now = new Date();
   byId("clock").textContent = hhmm(now);
+  byId("dateStamp").textContent = fullDate(now);
 
   var foot = byId("foot");
   foot.classList.toggle("offline", !online);
@@ -460,17 +499,15 @@ function render() {
 
   if (!config.roomId) {
     byId("roomName").textContent = "Kein Raum";
-    byId("roomFloor").textContent = "";
     box.className = "";
     byId("nowHeadline").textContent = "Nicht zugewiesen";
     byId("nowDetail").textContent = "Diesem Geraet ist im Backend noch kein Raum zugewiesen.";
-    showEmptyWeek("Ohne Raumzuweisung gibt es keinen Wochenplan.");
+    showEmptyPlan("Ohne Raumzuweisung gibt es keinen Plan.");
     return;
   }
 
   var room = currentRoom();
   byId("roomName").textContent = room ? (room.name || room.roomId) : ("Zimmer " + config.roomId);
-  byId("roomFloor").textContent = room ? (room.floor || "") : "";
 
   if (!room) {
     box.className = "";
@@ -478,7 +515,7 @@ function render() {
     byId("nowDetail").textContent = fetchedAt
       ? "Raum " + config.roomId + " kommt im zuletzt geholten Plan nicht vor."
       : "Raumplan noch nicht geholt.";
-    showEmptyWeek(fetchedAt
+    showEmptyPlan(fetchedAt
       ? "Raum " + config.roomId + " fehlt im zuletzt geholten Plan."
       : "Raumplan wird geholt.");
     return;
@@ -516,7 +553,7 @@ function render() {
     }
   }
 
-  renderWeek(bookings, now, state);
+  renderPlan(bookings, now, state);
 }
 
 /* ------------------------------------------------------------------- Start */
